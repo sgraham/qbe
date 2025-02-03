@@ -691,7 +691,7 @@ parseline(PState ps)
 				err("column number too big");
 		} else
 			arg[1] = INT(0);
-		goto Ins;
+		goto LblIns;
 	}
 	if (op == Tcall) {
 		curf->leaf = 0;
@@ -705,7 +705,7 @@ parseline(PState ps)
 		}
 		if (k >= Ksb)
 			k = Kw;
-		goto Ins;
+		goto LblIns;
 	}
 	if (op == Tloadw)
 		op = Oloadsw;
@@ -776,7 +776,7 @@ parseline(PState ps)
 	default:
 		if (op >= NPubOp)
 			err("invalid instruction");
-	Ins:
+	LblIns:
 		if (curi - insb >= NIns)
 			err("too many instructions");
 		curi->op = op;

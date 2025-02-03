@@ -8,6 +8,13 @@
 #define MAKESURE(what, x) typedef char make_sure_##what[(x)?1:-1]
 #define die(...) die_(__FILE__, __VA_ARGS__)
 
+#if _MSC_VER
+#define NORETURN __declspec(noreturn)
+#else
+#define NORETURN __attribute__((noreturn))
+#endif
+
+
 typedef unsigned char uchar;
 typedef unsigned int uint;
 typedef unsigned long ulong;
@@ -463,7 +470,7 @@ typedef enum {
 extern Typ *typ;
 extern Ins insb[NIns], *curi;
 uint32_t hash(char *);
-void die_(char *, char *, ...) __attribute__((noreturn));
+NORETURN void die_(char *, char *, ...);
 void *emalloc(size_t);
 void *alloc(size_t);
 void freeall(void);
@@ -518,7 +525,7 @@ extern Op optab[NOp];
 void parse(FILE *, char *, void (char *), void (Dat *), void (Fn *));
 void printfn(Fn *, FILE *);
 void printref(Ref, Fn *, FILE *);
-void err(char *, ...) __attribute__((noreturn));
+NORETURN void err(char *, ...);
 
 /* abi.c */
 void elimsb(Fn *);
