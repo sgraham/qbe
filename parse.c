@@ -326,7 +326,6 @@ Alpha:
 	t = lexh[hash(tok)*K >> M];
 	if (t == Txxx || strcmp(kwmap[t], tok) != 0) {
 		err("unknown keyword %s", tok);
-		return Txxx;
 	}
 	return t;
 }
@@ -491,7 +490,7 @@ parsecls(int *tyn)
 static int
 parserefl(int arg)
 {
-	int k, ty, env, hasenv, vararg;
+	int k, ty = 0, env, hasenv, vararg;
 	Ref r;
 
 	hasenv = 0;
@@ -597,7 +596,7 @@ parseline(PState ps)
 	Ref r;
 	Blk *b;
 	Con *c;
-	int t, op, i, k, ty;
+	int t, op, i, k, ty = 0;
 
 	t = nextnl();
 	if (ps == PLbl && t != Tlbl && t != Trbrace)

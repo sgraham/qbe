@@ -1,5 +1,9 @@
 *.o
+*.obj
+*.pdb
+*.ilk
 qbe
+qbe.exe
 config.h
 .comfile
 *.out
@@ -7,3 +11,6 @@ win32/sqbe/
 win32/.vs
 win32/x64
 *.vcxproj.user
+tmp.s
+tmp.exe
+driver.c

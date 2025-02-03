@@ -98,7 +98,7 @@ selcmp(Ins i, int k, int op, Fn *fn)
 {
 	Ins *icmp;
 	Ref r, r0, r1;
-	int sign, swap, neg;
+	int sign = 0, swap = 0, neg = 0;
 
 	switch (op) {
 	case Cieq:

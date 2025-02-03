@@ -1,3 +1,18 @@
+#ifdef _MSC_VER
+#pragma warning(disable: 4146)  // unary minus operator applied to unsigned type, result still unsigned
+#pragma warning(disable: 4200)  // nonstandard extension used : zero - sized array in struct / union
+#pragma warning(disable: 4244)  // int64_t to int, possible loss of data
+#pragma warning(disable: 4245)  // signed/unsigned mismatch
+#pragma warning(disable: 4389)  // signed/unsigned mismatch
+#define _CRT_SECURE_NO_DEPRECATE
+#endif
+
+#if _MSC_VER
+#define NORETURN __declspec(noreturn)
+#else
+#define NORETURN __attribute__((noreturn))
+#endif
+
 #include <assert.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -7,13 +22,6 @@
 
 #define MAKESURE(what, x) typedef char make_sure_##what[(x)?1:-1]
 #define die(...) die_(__FILE__, __VA_ARGS__)
-
-#if _MSC_VER
-#define NORETURN __declspec(noreturn)
-#else
-#define NORETURN __attribute__((noreturn))
-#endif
-
 
 typedef unsigned char uchar;
 typedef unsigned int uint;
@@ -51,6 +59,7 @@ enum {
 struct Target {
 	char name[16];
 	char apple;
+	char windows;
 	int gpr0;   /* first general purpose reg */
 	int ngpr;
 	int fpr0;   /* first floating point reg */
@@ -592,3 +601,4 @@ int stashbits(void *, int);
 void elf_emitfnfin(char *, FILE *);
 void elf_emitfin(FILE *);
 void macho_emitfin(FILE *);
+void pe_emitfin(FILE *);

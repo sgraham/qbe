@@ -194,12 +194,12 @@ killsl(Ref r, Slice sl)
 static Ref
 def(Slice sl, bits msk, Blk *b, Ins *i, Loc *il)
 {
-	Slice sl1;
+	Slice sl1 = {0};
 	Blk *bp;
 	bits msk1, msks;
 	int off, cls, cls1, op, sz, ld;
 	uint np, oldl, oldt;
-	Ref r, r1;
+	Ref r = R, r1;
 	Phi *p;
 	Insert *ist;
 	Loc l;

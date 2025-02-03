@@ -339,7 +339,7 @@ static void
 selcall(Fn *fn, Ins *i0, Ins *i1, Insl **ilp)
 {
 	Ins *i;
-	Class *ca, *c, cr;
+	Class *ca, *c, cr = {0};
 	int j, k, cty;
 	uint64_t stk, off;
 	Ref r, r1, r2, tmp[2];

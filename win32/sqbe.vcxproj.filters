@@ -54,6 +54,9 @@
     <ClCompile Include="..\rv64\rv64_targ.c">
       <Filter>rv64</Filter>
     </ClCompile>
+    <ClCompile Include="..\amd64\amd64_winabi.c">
+      <Filter>amd64</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\all.h" />

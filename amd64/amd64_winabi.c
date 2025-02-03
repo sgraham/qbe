@@ -17,6 +17,18 @@ struct RAlloc {
 	RAlloc *link;
 };
 
+int amd64_winabi_rsave[] = {
+	RCX, RDX, R8, R9, R10, R11, RAX,
+	XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7,
+	XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, -1
+ };
+int amd64_winabi_rclob[] = {RBX, R12, R13, R14, R15, RSI, RDI, -1};
+
+MAKESURE(winabi_arrays_ok,
+	sizeof amd64_winabi_rsave == (NGPS+NFPS+1-2) * sizeof(int) &&
+	sizeof amd64_winabi_rclob == (NCLR+2+1) * sizeof(int)
+);
+
 static void
 classify(AClass *a, Typ *t, uint s)
 {
@@ -81,6 +93,7 @@ typclass(AClass *a, Typ *t)
 		/* large or unaligned structures are
 		 * required to be passed in memory
 		 */
+		abort(); // this is wrong, has to be by pointer not val, anything non-1/2/4/8.
 		a->inmem = 1;
 		return;
 	}
@@ -92,26 +105,21 @@ typclass(AClass *a, Typ *t)
 }
 
 static int
-retr(Ref reg[2], AClass *aret)
+retr(Ref *reg, AClass *aret)
 {
-	static int retreg[2][2] = {{RAX, RDX}, {XMM0, XMM0+1}};
-	int n, k, ca, nr[2];
+	int k;
 
-	nr[0] = nr[1] = 0;
-	ca = 0;
-	for (n=0; (uint)n*8<aret->size; n++) {
-		k = KBASE(aret->cls[n]);
-		reg[n] = TMP(retreg[k][nr[k]++]);
-		ca += 1 << (2 * k);
-	}
-	return ca;
+	assert(aret->size <= 8);
+	k = KBASE(aret->cls[0]);
+	*reg = (k == 0 ? TMP(RAX) : TMP(XMM0));
+	return 1 << (2 * k);
 }
 
 static void
 selret(Blk *b, Fn *fn)
 {
 	int j, k, ca;
-	Ref r, r0, reg[2];
+	Ref r0, reg;
 	AClass aret;
 
 	j = b->jmp.type;
@@ -131,13 +139,9 @@ selret(Blk *b, Fn *fn)
 			emit(Oblit0, 0, R, r0, fn->retr);
 			ca = 1;
 		} else {
-			ca = retr(reg, &aret);
-			if (aret.size > 8) {
-				r = newtmp("abi", Kl, fn);
-				emit(Oload, Kl, reg[1], r, R);
-				emit(Oadd, Kl, r, r0, getcon(8, fn));
-			}
-			emit(Oload, Kl, reg[0], r0, R);
+			ca = retr(&reg, &aret);
+			assert(aret.size <= 8);
+			emit(Oload, Kl, reg, r0, R);
 		}
 	} else {
 		k = j - Jretw;
@@ -161,9 +165,9 @@ argsclass(Ins *i0, Ins *i1, AClass *ac, int op, AClass *aret, Ref *env)
 	Ins *i;
 
 	if (aret && aret->inmem)
-		nint = 5; /* hidden argument */
+		nint = 3; /* hidden argument */
 	else
-		nint = 6;
+		nint = 4;
 	nsse = 8;
 	varc = 0;
 	envc = 0;
@@ -215,36 +219,13 @@ argsclass(Ins *i0, Ins *i1, AClass *ac, int op, AClass *aret, Ref *env)
 		}
 
 	if (varc && envc)
-		err("sysv abi does not support variadic env calls");
+		err("winabi does not support variadic env calls");
 
-	return ((varc|envc) << 12) | ((6-nint) << 4) | ((8-nsse) << 8);
+	return ((varc|envc) << 12) | ((4-nint) << 4) | ((8-nsse) << 8);
 }
 
-int amd64_sysv_rsave[] = {
-	RDI, RSI, RDX, RCX, R8, R9, R10, R11, RAX,
-	XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7,
-	XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, -1
-};
-int amd64_sysv_rclob[] = {RBX, R12, R13, R14, R15, -1};
-
-MAKESURE(sysv_arrays_ok,
-	sizeof amd64_sysv_rsave == (NGPS+NFPS+1) * sizeof(int) &&
-	sizeof amd64_sysv_rclob == (NCLR+1) * sizeof(int)
-);
-
-/* layout of call's second argument (RCall)
- *
- *  29     12    8    4  3  0
- *  |0...00|x|xxxx|xxxx|xx|xx|                  range
- *          |    |    |  |  ` gp regs returned (0..2)
- *          |    |    |  ` sse regs returned   (0..2)
- *          |    |    ` gp regs passed         (0..6)
- *          |    ` sse regs passed             (0..8)
- *          ` 1 if rax is used to pass data    (0..1)
- */
-
 bits
-amd64_sysv_retregs(Ref r, int p[2])
+amd64_winabi_retregs(Ref r, int p[2])
 {
 	bits b;
 	int ni, nf;
@@ -253,14 +234,10 @@ amd64_sysv_retregs(Ref r, int p[2])
 	b = 0;
 	ni = r.val & 3;
 	nf = (r.val >> 2) & 3;
-	if (ni >= 1)
+	if (ni == 1)
 		b |= BIT(RAX);
-	if (ni >= 2)
-		b |= BIT(RDX);
-	if (nf >= 1)
+	else
 		b |= BIT(XMM0);
-	if (nf >= 2)
-		b |= BIT(XMM1);
 	if (p) {
 		p[0] = ni;
 		p[1] = nf;
@@ -269,7 +246,7 @@ amd64_sysv_retregs(Ref r, int p[2])
 }
 
 bits
-amd64_sysv_argregs(Ref r, int p[2])
+amd64_winabi_argregs(Ref r, int p[2])
 {
 	bits b;
 	int j, ni, nf, ra;
@@ -280,7 +257,7 @@ amd64_sysv_argregs(Ref r, int p[2])
 	nf = (r.val >> 8) & 15;
 	ra = (r.val >> 12) & 1;
 	for (j=0; j<ni; j++)
-		b |= BIT(amd64_sysv_rsave[j]);
+		b |= BIT(amd64_winabi_rsave[j]);
 	for (j=0; j<nf; j++)
 		b |= BIT(XMM0+j);
 	if (p) {
@@ -294,7 +271,7 @@ static Ref
 rarg(int ty, int *ni, int *ns)
 {
 	if (KBASE(ty) == 0)
-		return TMP(amd64_sysv_rsave[(*ni)++]);
+		return TMP(amd64_winabi_rsave[(*ni)++]);
 	else
 		return TMP(XMM0 + (*ns)++);
 }
@@ -322,7 +299,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 	for (stk=0, a=&ac[i1-i0]; a>ac;)
 		if ((--a)->inmem) {
 			if (a->align > 4)
-				err("sysv abi requires alignments of 16 or less");
+				err("win abi requires alignments of 16 or less");
 			stk += a->size;
 			if (a->align == 4)
 				stk += stk & 15;
@@ -386,7 +363,8 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 
 	ni = ns = 0;
 	if (ra && aret.inmem)
-		emit(Ocopy, Kl, rarg(Kl, &ni, &ns), ra->i.to, R); /* pass hidden argument */
+		emit(Ocopy, Kl, rarg(Kl, &ni, &ns), ra->i.to, R); /* pass
+hidden argument */
 
 	for (i=i0, a=ac; i<i1; i++, a++) {
 		if (i->op >= Oarge || a->inmem)
@@ -428,7 +406,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 static int
 selpar(Fn *fn, Ins *i0, Ins *i1)
 {
-	AClass* ac, *a, aret = {0};
+	AClass *ac, *a, aret = {0};
 	Ins *i;
 	int ni, ns, s, al, fa;
 	Ref r, env;
@@ -443,7 +421,7 @@ selpar(Fn *fn, Ins *i0, Ins *i1)
 		fa = argsclass(i0, i1, ac, Opar, &aret, &env);
 	} else
 		fa = argsclass(i0, i1, ac, Opar, 0, &env);
-	fn->reg = amd64_sysv_argregs(CALL(fa), 0);
+	fn->reg = amd64_winabi_argregs(CALL(fa), 0);
 
 	for (i=i0, a=ac; i<i1; i++, a++) {
 		if (i->op != Oparc || a->inmem)
@@ -471,7 +449,7 @@ selpar(Fn *fn, Ins *i0, Ins *i1)
 		switch (a->inmem) {
 		case 1:
 			if (a->align > 4)
-				err("sysv abi requires alignments of 16 or less");
+				err("win abi requires alignments of 16 or less");
 			if (a->align == 4)
 				s = (s+3) & -4;
 			fn->tmp[i->to.val].slot = -s;
@@ -546,25 +524,25 @@ selvaarg(Fn *fn, Blk *b, Ins *i)
 	isint = KBASE(i->cls) == 0;
 
 	/* @b [...]
-	       r0 =l add ap, (0 or 4)
-	       nr =l loadsw r0
-	       r1 =w cultw nr, (48 or 176)
-	       jnz r1, @breg, @bstk
+		   r0 =l add ap, (0 or 4)
+		   nr =l loadsw r0
+		   r1 =w cultw nr, (48 or 176)
+		   jnz r1, @breg, @bstk
 	   @breg
-	       r0 =l add ap, 16
-	       r1 =l loadl r0
-	       lreg =l add r1, nr
-	       r0 =w add nr, (8 or 16)
-	       r1 =l add ap, (0 or 4)
-	       storew r0, r1
+		   r0 =l add ap, 16
+		   r1 =l loadl r0
+		   lreg =l add r1, nr
+		   r0 =w add nr, (8 or 16)
+		   r1 =l add ap, (0 or 4)
+		   storew r0, r1
 	   @bstk
-	       r0 =l add ap, 8
-	       lstk =l loadl r0
-	       r1 =l add lstk, 8
-	       storel r1, r0
+		   r0 =l add ap, 8
+		   lstk =l loadl r0
+		   r1 =l add lstk, 8
+		   storel r1, r0
 	   @b0
-	       %loc =l phi @breg %lreg, @bstk %lstk
-	       i->to =(i->cls) load %loc
+		   %loc =l phi @breg %lreg, @bstk %lstk
+		   i->to =(i->cls) load %loc
 	*/
 
 	loc = newtmp("abi", Kl, fn);
@@ -654,7 +632,7 @@ selvastart(Fn *fn, int fa, Ref ap)
 }
 
 void
-amd64_sysv_abi(Fn *fn)
+amd64_winabi_abi(Fn *fn)
 {
 	Blk *b;
 	Ins *i, *i0, *ip;

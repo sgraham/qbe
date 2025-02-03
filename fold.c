@@ -338,28 +338,28 @@ foldint(Con *res, int op, int w, Con *cl, Con *cr)
 	} l, r;
 	uint64_t x;
 	Sym sym;
-	int typ;
+	int typx;
 
 	memset(&sym, 0, sizeof sym);
-	typ = CBits;
+	typx = CBits;
 	l.s = cl->bits.i;
 	r.s = cr->bits.i;
 	if (op == Oadd) {
 		if (cl->type == CAddr) {
 			if (cr->type == CAddr)
 				return 1;
-			typ = CAddr;
+			typx = CAddr;
 			sym = cl->sym;
 		}
 		else if (cr->type == CAddr) {
-			typ = CAddr;
+			typx = CAddr;
 			sym = cr->sym;
 		}
 	}
 	else if (op == Osub) {
 		if (cl->type == CAddr) {
 			if (cr->type != CAddr) {
-				typ = CAddr;
+				typx = CAddr;
 				sym = cl->sym;
 			} else if (!symeq(cl->sym, cr->sym))
 				return 1;
@@ -407,7 +407,7 @@ foldint(Con *res, int op, int w, Con *cl, Con *cr)
 	case Ocast:
 		x = l.u;
 		if (cl->type == CAddr) {
-			typ = CAddr;
+			typx = CAddr;
 			sym = cl->sym;
 		}
 		break;
@@ -461,7 +461,7 @@ foldint(Con *res, int op, int w, Con *cl, Con *cr)
 		else
 			die("unreachable");
 	}
-	*res = (Con){.type=typ, .sym=sym, .bits={.i=x}};
+	*res = (Con){.type=typx, .sym=sym, .bits={.i=x}};
 	return 0;
 }
 

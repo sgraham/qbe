@@ -108,7 +108,7 @@ freeall()
 }
 
 void *
-vnew(ulong len, size_t esz, Pool pool)
+vnew(ulong len, size_t esz, Pool poolx)
 {
 	void *(*f)(size_t);
 	ulong cap;
@@ -116,12 +116,12 @@ vnew(ulong len, size_t esz, Pool pool)
 
 	for (cap=VMin; cap<len; cap*=2)
 		;
-	f = pool == PHeap ? emalloc : alloc;
+	f = poolx == PHeap ? emalloc : alloc;
 	v = f(cap * esz + sizeof(Vec));
 	v->mag = VMag;
 	v->cap = cap;
 	v->esz = esz;
-	v->pool = pool;
+	v->pool = poolx;
 	return v + 1;
 }
 
