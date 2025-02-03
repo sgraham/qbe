@@ -37,9 +37,7 @@ def test(fn, plat):
     else:
         error
 
-    subprocess.run(
-        ["./qbe.exe"] + qbe_target + ["-o", "tmp.s", fn], check=True
-    )
+    subprocess.run(["./sqbe.exe"] + qbe_target + ["-o", "tmp.s", fn], check=True)
     to_build = ["tmp.s"]
     if driver:
         with open("driver.c", "w", newline="\n") as f:
@@ -47,18 +45,20 @@ def test(fn, plat):
         to_build.append("driver.c")
 
     subprocess.run(["clang", "-g", "-o", "tmp.exe"] + to_build, check=True)
-    proc = subprocess.run(["./tmp.exe", "a", "b", "c"], capture_output=True)
+    proc = subprocess.run(
+        ["./tmp.exe", "a", "b", "c"], capture_output=True, universal_newlines=True
+    )
     if output:
-        out = proc.stdout.decode("utf-8")
+        out = proc.stdout
         wanted = "\n".join(output)
         if out == wanted:
             print("ok")
         else:
             print("--- FAILED")
             print("GOT:")
-            print(out)
+            print("'''%s'''" % out)
             print("WANTED:")
-            print(wanted)
+            print("'''%s'''" % wanted)
     else:
         print("ok")
 

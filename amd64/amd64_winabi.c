@@ -305,6 +305,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 				stk += stk & 15;
 		}
 	stk += stk & 15;
+	stk += 32; /* shadow space */
 	if (stk) {
 		r = getcon(-(int64_t)stk, fn);
 		emit(Osalloc, Kl, R, r, R);
@@ -363,8 +364,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 
 	ni = ns = 0;
 	if (ra && aret.inmem)
-		emit(Ocopy, Kl, rarg(Kl, &ni, &ns), ra->i.to, R); /* pass
-hidden argument */
+		emit(Ocopy, Kl, rarg(Kl, &ni, &ns), ra->i.to, R); /* pass hidden argument */
 
 	for (i=i0, a=ac; i<i1; i++, a++) {
 		if (i->op >= Oarge || a->inmem)
@@ -400,7 +400,8 @@ hidden argument */
 		emit(Oadd, Kl, r1, r, getcon(off, fn));
 		off += a->size;
 	}
-	emit(Osalloc, Kl, r, getcon(stk, fn), R);
+
+	emit(Osalloc, Kl, R, getcon(stk, fn), R);
 }
 
 static int
