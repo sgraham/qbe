@@ -1,4 +1,4 @@
-#include "all.h"
+#include "rv64_all.h"
 
 /* the risc-v lp64d abi */
 

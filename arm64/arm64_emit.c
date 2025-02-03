@@ -1,4 +1,4 @@
-#include "all.h"
+#include "arm64_all.h"
 
 typedef struct E E;
 

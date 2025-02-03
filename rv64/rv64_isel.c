@@ -1,4 +1,4 @@
-#include "all.h"
+#include "rv64_all.h"
 
 static int
 memarg(Ref *r, int op, Ins *i)

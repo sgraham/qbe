@@ -1,4 +1,4 @@
-#include "all.h"
+#include "amd64_all.h"
 
 Amd64Op amd64_op[NOp] = {
 #define O(op, t, x) [O##op] =

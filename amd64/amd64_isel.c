@@ -1,4 +1,4 @@
-#include "all.h"
+#include "amd64_all.h"
 #include <limits.h>
 
 /* For x86_64, do the following:

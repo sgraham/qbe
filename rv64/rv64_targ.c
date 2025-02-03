@@ -1,4 +1,4 @@
-#include "all.h"
+#include "rv64_all.h"
 
 Rv64Op rv64_op[NOp] = {
 #define O(op, t, x) [O##op] =

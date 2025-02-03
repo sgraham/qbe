@@ -1,4 +1,4 @@
-#include "all.h"
+#include "arm64_all.h"
 
 int arm64_rsave[] = {
 	R0,  R1,  R2,  R3,  R4,  R5,  R6,  R7,
