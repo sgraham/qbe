@@ -7,6 +7,11 @@ call "cl.exe" ^
     rv64/rv64_abi.c rv64/rv64_emit.c rv64/rv64_isel.c rv64/rv64_targ.c ^
     /link /out:sqbe.exe
 
+call python test.py test/puts10.ssa
+::sqbe -dPARI -t amd64_win test/puts10.ssa
+
+exit /b
+
 ::call python test.py test/abi1.ssa
 ::call python test.py test/abi2.ssa
 ::call python test.py test/abi3.ssa

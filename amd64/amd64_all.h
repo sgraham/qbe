@@ -4,14 +4,14 @@ typedef struct Amd64Op Amd64Op;
 
 enum Amd64Reg {
 	RAX = RXX+1, /* caller-save */
-	RCX,
-	RDX,
-	RSI,
-	RDI,
-	R8,
-	R9,
-	R10,
-	R11,
+	RCX,  /* caller-save */
+	RDX,  /* caller-save */
+	RSI,  /* caller-save on sysv, callee-save on win */
+	RDI,  /* caller-save on sysv, callee-save on win */
+	R8,  /* caller-save */
+	R9,  /* caller-save */
+	R10,  /* caller-save */
+	R11,  /* caller-save */
 
 	RBX, /* callee-save */
 	R12,
@@ -41,9 +41,13 @@ enum Amd64Reg {
 
 	NFPR = XMM14 - XMM0 + 1, /* reserve XMM15 */
 	NGPR = RSP - RAX + 1,
-	NGPS = R11 - RAX + 1,
 	NFPS = NFPR,
-	NCLR = R15 - RBX + 1,
+
+	NGPS_SYSV = R11 - RAX + 1,
+	NCLR_SYSV = R15 - RBX + 1,
+
+	NGPS_WIN = R11 - RAX + 1 - 2,  /* -2 for RDI/RSI */
+	NCLR_WIN = R15 - RBX + 1 + 2   /* +2 for RDI/RSI */,
 };
 MAKESURE(reg_not_tmp, XMM15 < (int)Tmp0);
 

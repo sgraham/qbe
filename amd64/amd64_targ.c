@@ -30,7 +30,7 @@ Target T_amd64_sysv = {
 	.asloc = ".L",
 	.abi1 = amd64_sysv_abi,
 	.rsave = amd64_sysv_rsave,
-	.nrsave = {NGPS, NFPS}, \
+	.nrsave = {NGPS_SYSV, NFPS},
 	.retregs = amd64_sysv_retregs,
 	.argregs = amd64_sysv_argregs,
 	AMD64_COMMON
@@ -44,7 +44,7 @@ Target T_amd64_apple = {
 	.assym = "_",
 	.abi1 = amd64_sysv_abi,
 	.rsave = amd64_sysv_rsave,
-	.nrsave = {NGPS, NFPS}, \
+	.nrsave = {NGPS_SYSV, NFPS},
 	.retregs = amd64_sysv_retregs,
 	.argregs = amd64_sysv_argregs,
 	AMD64_COMMON
@@ -57,7 +57,7 @@ Target T_amd64_win = {
 	.asloc = "L",
 	.abi1 = amd64_winabi_abi,
 	.rsave = amd64_winabi_rsave,
-	.nrsave = {NGPS - 2, XMM3 - XMM0 + 1},
+	.nrsave = {NGPS_WIN, NFPS},
 	.retregs = amd64_winabi_retregs,
 	.argregs = amd64_winabi_argregs,
 	AMD64_COMMON

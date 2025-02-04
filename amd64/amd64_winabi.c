@@ -17,16 +17,16 @@ struct RAlloc {
 	RAlloc *link;
 };
 
-int amd64_winabi_rsave[] = {
-	RCX, RDX, R8, R9, R10, R11, RAX,
-	XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7,
-	XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, -1
- };
+// Ref: https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention
+
+int amd64_winabi_rsave[] = {RCX,  RDX,   R8,    R9,    R10,   R11,   RAX,  XMM0,
+                            XMM1, XMM2,  XMM3,  XMM4,  XMM5,  XMM6,  XMM7, XMM8,
+                            XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, -1};
 int amd64_winabi_rclob[] = {RBX, R12, R13, R14, R15, RSI, RDI, -1};
 
 MAKESURE(winabi_arrays_ok,
-	sizeof amd64_winabi_rsave == (NGPS+NFPS+1-2) * sizeof(int) &&
-	sizeof amd64_winabi_rclob == (NCLR+2+1) * sizeof(int)
+	sizeof amd64_winabi_rsave == (NGPS_WIN+NFPS+1) * sizeof(int) &&
+	sizeof amd64_winabi_rclob == (NCLR_WIN+1) * sizeof(int)
 );
 
 static void
@@ -89,11 +89,9 @@ typclass(AClass *a, Typ *t)
 	a->size = sz;
 	a->align = t->align;
 
-	if (t->isdark || sz > 16 || sz == 0) {
-		/* large or unaligned structures are
-		 * required to be passed in memory
-		 */
-		abort(); // this is wrong, has to be by pointer not val, anything non-1/2/4/8.
+	if (t->isdark || (sz != 1 && sz != 2 && sz != 4 && sz != 8) || sz == 0) {
+		/* large or unaligned structures are required
+		 * to be copied and passed by pointer. */
 		a->inmem = 1;
 		return;
 	}
@@ -305,7 +303,9 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 				stk += stk & 15;
 		}
 	stk += stk & 15;
-	stk += 32; /* shadow space */
+	/* shadow space. TODO: would perhaps be better to do this when !fn->leaf in
+	 * the head of the function, rather than before/after every call. */
+	stk += 32;
 	if (stk) {
 		r = getcon(-(int64_t)stk, fn);
 		emit(Osalloc, Kl, R, r, R);
@@ -402,6 +402,11 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 	}
 
 	emit(Osalloc, Kl, R, getcon(stk, fn), R);
+	emit(Osalloc, Kl, r, getcon(stk, fn), R);
+	if (off == 0) {
+		/* hack to not drop the alloc even if it's otherwise 'unused' */
+		emit(Ocopy, Kl, r, r, R);
+	}
 }
 
 static int

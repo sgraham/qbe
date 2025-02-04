@@ -587,8 +587,13 @@ framesz(E *e)
 	/* specific to NAlign == 3 */
 	o = 0;
 	if (!e->fn->leaf) {
-		for (i=0, o=0; i<NCLR; i++)
-			o ^= e->fn->reg >> amd64_sysv_rclob[i];
+		if (T.windows) {
+			for (i=0, o=0; i<NCLR_WIN; i++)
+				o ^= e->fn->reg >> amd64_winabi_rclob[i];
+		} else {
+			for (i=0, o=0; i<NCLR_SYSV; i++)
+				o ^= e->fn->reg >> amd64_sysv_rclob[i];
+		}
 		o &= 1;
 	}
 	f = e->fn->slot;
@@ -613,6 +618,10 @@ amd64_emitfn(Fn *fn, FILE *f)
 	Ins *i, itmp;
 	int *r, c, o, n, lbl;
 	E *e;
+	int *rsave = T.windows ? amd64_winabi_rsave : amd64_sysv_rsave;
+	int *rclob = T.windows ? amd64_winabi_rclob : amd64_sysv_rclob;
+	int ncallregs = T.windows ? 4 : 6;
+	int nclr = T.windows ? NCLR_WIN : NCLR_SYSV;
 
 	e = &(E){.f = f, .fn = fn};
 	emitfnlnk(fn->name, &fn->lnk, f);
@@ -627,12 +636,12 @@ amd64_emitfn(Fn *fn, FILE *f)
 		fprintf(f, "\tsubq $%"PRIu64", %%rsp\n", e->fsz);
 	if (fn->vararg) {
 		o = -176;
-		for (r=amd64_sysv_rsave; r<&amd64_sysv_rsave[6]; r++, o+=8)
+		for (r=rsave; r<&rsave[ncallregs]; r++, o+=8)
 			fprintf(f, "\tmovq %%%s, %d(%%rbp)\n", rname[*r][0], o);
 		for (n=0; n<8; ++n, o+=16)
 			fprintf(f, "\tmovaps %%xmm%d, %d(%%rbp)\n", n, o);
 	}
-	for (r=amd64_sysv_rclob; r<&amd64_sysv_rclob[NCLR]; r++)
+	for (r=rclob; r<&rclob[nclr]; r++)
 		if (fn->reg & BIT(*r)) {
 			itmp.arg[0] = TMP(*r);
 			emitf("pushq %L0", &itmp, e);
@@ -655,7 +664,7 @@ amd64_emitfn(Fn *fn, FILE *f)
 					"\tmovq %%rbp, %%rsp\n"
 					"\tsubq $%"PRIu64", %%rsp\n",
 					e->fsz + e->nclob * 8);
-			for (r=&amd64_sysv_rclob[NCLR]; r>amd64_sysv_rclob;)
+			for (r=&rclob[nclr]; r>rclob;)
 				if (fn->reg & BIT(*--r)) {
 					itmp.arg[0] = TMP(*r);
 					emitf("popq %L0", &itmp, e);
