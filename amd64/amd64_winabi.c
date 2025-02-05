@@ -150,8 +150,11 @@ static void assign_register_or_stack(RegisterUsage* reg_usage,
 }
 
 // This function is used for both arguments and parameters.
-static RegisterUsage classify_arguments(Ins* earliest_arg_instr,
-                                        Ins* call_instr,
+// begin_instr should either point at the first Oarg or Opar, and end_instr
+// should point past the last one (so to the Ocall for arguments, or to the
+// first 'real' instruction of the function for parameters).
+static RegisterUsage classify_arguments(Ins* begin_instr,
+                                        Ins* end_instr,
                                         ArgClass* arg_classes,
                                         ArgClass* return_class) {
   RegisterUsage reg_usage = {0};
@@ -161,7 +164,7 @@ static RegisterUsage classify_arguments(Ins* earliest_arg_instr,
   // For each argument, determine how it will be passed (int, float, stack)
   // and update the `reg_usage` counts. Additionally, fill out arg_classes for
   // each argument.
-  for (Ins* instr = earliest_arg_instr; instr < call_instr; ++instr, ++arg) {
+  for (Ins* instr = begin_instr; instr < end_instr; ++instr, ++arg) {
     switch (instr->op) {
       case Oarg:
       case Opar:
@@ -384,6 +387,19 @@ static Ins* lower_call(Fn* func,
   return instr_past_args;
 }
 
+static void lower_block_return(Fn* func, Blk* block) {
+  int jmp_type = block->jmp.type;
+
+  if (!isret(jmp_type) || jmp_type == Jret0) {
+    return;
+  }
+
+  // Save the argument, and set the block to be a void return because once it's
+  // lowered it's handled by the the register/stack manipulation.
+  Ref ret_arg = block->jmp.arg;
+  block->jmp.type = Jret0;
+}
+
 static void lower_args_for_block(Fn* func,
                                  Blk* block,
                                  ExtraAlloc** pextra_alloc) {
@@ -395,7 +411,7 @@ static void lower_args_for_block(Fn* func,
   // when adding to it.
   curi = &insb[NIns];
 
-  // lower_block_returns(func, block);
+  lower_block_return(func, block);
 
   if (block->ins) {
     // Work backwards through the instructions, either copying them unchanged,
@@ -434,13 +450,83 @@ static void lower_args_for_block(Fn* func,
   idup(&block->ins, curi, block->nins);
 }
 
+static Ins* find_end_of_func_parameters(Blk* start_block) {
+  Ins* i;
+  for (i = start_block->ins; i < &start_block->ins[start_block->nins]; ++i) {
+    if (!ispar(i->op)) {
+      break;
+    }
+  }
+  return i;
+}
+
+// Copy from registers/stack into values.
+static void lower_func_parameters(Fn* func) {
+  // This is half-open, so end points after the last Opar.
+  Blk* start_block = func->start;
+  Ins* start_of_params = start_block->ins;
+  Ins* end_of_params = find_end_of_func_parameters(start_block);
+
+  size_t num_params = end_of_params - start_of_params;
+  ArgClass* arg_classes = alloc(num_params * sizeof(ArgClass));
+
+  // global temporary buffer used by emit. Reset to the end, and predecremented
+  // when adding to it.
+  curi = &insb[NIns];
+
+  RegisterUsage reg_usage;
+  if (func->retty >= 0) {
+    die("todo; this param is hidden struct ret val ptr");
+  } else {
+    reg_usage =
+        classify_arguments(start_of_params, end_of_params, arg_classes, NULL);
+  }
+  func->reg = amd64_winabi_argregs(
+      CALL(register_usage_to_call_arg_value(reg_usage)), NULL);
+
+  ArgClass* arg = arg_classes;
+  int reg_counter = 0;
+  for (Ins* instr = start_of_params; instr < end_of_params; ++instr, ++arg) {
+    if (instr->op == Oparc) {
+      die("todo; struct par");
+    }
+    switch (arg->style) {
+      case APS_Register: {
+        Ref from = register_for_arg(arg->cls, reg_counter++);
+        emit(Ocopy, instr->cls, instr->to, from, R);
+        break;
+      }
+
+      case APS_InlineOnStack:
+        die("todo; from stack");
+        break;
+
+      case APS_CopyAndPointerOnStack:
+      case APS_CopyAndPointerInRegister:
+        die("struct by val with pointer");
+
+      case APS_Invalid:
+        die("unreachable");
+    }
+  }
+
+  int num_created_instrs = &insb[NIns] - curi;
+  int num_other_after_instrs = start_block->nins - num_params;
+  int new_total_instrs = num_other_after_instrs + num_created_instrs;
+  Ins* new_instrs = alloc(new_total_instrs * sizeof(Ins));
+  Ins* instr_p = icpy(new_instrs, curi, num_created_instrs);
+  icpy(instr_p, end_of_params, num_other_after_instrs);
+  start_block->nins = new_total_instrs;
+  start_block->ins = new_instrs;
+}
+
 // The main job of this function is to lower generic instructions into the
 // specific details of how arguments are passed, and parameters are
 // interpreted for win x64. A useful reference is
 // https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention .
 //
 // Some of the major differences from SysV if you're comparing the code
-// (non-exhaustive of course):
+// (non-exhaustive):
 // - only 4 int and 4 float regs are used
 // - when an int register is assigned a value, its associated float register is
 //   left unused (and vice versa). i.e. there's only one counter as you assign
@@ -450,20 +536,21 @@ static void lower_args_for_block(Fn* func,
 //   `struct { void*, int64_t }` by value, it first needs to be copied to
 //   another alloca (in order to maintain value semantics at the language
 //   level), then the pointer to that copy is treated as a regular integer
-//   argument (which then itself *also* be copied to the stack in the case
+//   argument (which then itself may *also* be copied to the stack in the case
 //   there's no integer register remaining.)
-void amd64_winabi_abi(Fn* fn) {
+void amd64_winabi_abi(Fn* func) {
   fprintf(stderr, "-------- BEFORE amd64_winabi_abi:\n");
-  printfn(fn, stderr);
+  printfn(func, stderr);
 
   // Reset |visit| flags for each block of the function. These are a
   // flag/counter to know when a processing step has already done something to
   // the block.
-  for (Blk* block = fn->start; block; block = block->link) {
+  for (Blk* block = func->start; block; block = block->link) {
     block->visit = 0;
   }
 
   // The first thing to do is lower incoming parameters to this function.
+  lower_func_parameters(func);
 
   // This is the second larger part of the job. We walk all blocks, and rewrite
   // instructions returns, calls, and handling of varargs into their win x64
@@ -475,16 +562,16 @@ void amd64_winabi_abi(Fn* fn) {
   // need to add stack allocas for copies when structs are passed or returned by
   // value.
   ExtraAlloc* extra_alloc = NULL;
-  for (Blk* block = fn->start->link; block; block = block->link) {
-    lower_args_for_block(fn, block, &extra_alloc);
+  for (Blk* block = func->start->link; block; block = block->link) {
+    lower_args_for_block(func, block, &extra_alloc);
   }
-  lower_args_for_block(fn, fn->start, &extra_alloc);
+  lower_args_for_block(func, func->start, &extra_alloc);
 
   fprintf(stderr, "-------- AFTER amd64_winabi_abis:\n");
-  printfn(fn, stderr);
+  printfn(func, stderr);
 
   if (debug['A']) {
     fprintf(stderr, "\n> After ABI lowering:\n");
-    printfn(fn, stderr);
+    printfn(func, stderr);
   }
 }
