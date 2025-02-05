@@ -169,7 +169,7 @@ static RegisterUsage classify_arguments(Ins* earliest_arg_instr,
                                  /*by_copy=*/false);
         arg->cls = instr->cls;
         arg->align = 3;
-        arg->size = 8;  // TODO: prob 4 for w?
+        arg->size = 8;
         break;
       case Oargc:
       case Oparc: {
@@ -181,6 +181,9 @@ static RegisterUsage classify_arguments(Ins* earliest_arg_instr,
                                          type->size != 4 && type->size != 8));
         assign_register_or_stack(&reg_usage, arg, /*is_float=*/false, by_copy);
         arg->cls = Kl;
+        if (!by_copy && type->size <= 4) {
+          arg->cls = Kw;
+        }
         arg->align = 3;
         arg->size = type->size;
         break;
@@ -283,7 +286,7 @@ static Ins* lower_call(Fn* func,
     }
   } else {
     // TODO: hidden first arg for structs by value here
-    abort();
+    die("todo; hidden first arg for struct return");
   }
 
   // Emit the actual call instruction. There's no 'to' value by this point
@@ -307,8 +310,10 @@ static Ins* lower_call(Fn* func,
       case APS_Register: {
         Ref into = register_for_arg(arg->cls, reg_counter++);
         if (instr->op == Oargc) {
-          // If this is a small struct being passed by value.
-          die("todo; small struct by val");
+          // If this is a small struct being passed by value. The value in the
+          // instruction in this case is a pointer, but it needs to be loaded
+          // into the register.
+          emit(Oload, arg->cls, into, instr->arg[1], R);
         } else {
           // Otherwise, a normal value passed in a register.
           emit(Ocopy, instr->cls, into, instr->arg[0], R);
