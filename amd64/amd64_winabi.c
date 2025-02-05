@@ -341,7 +341,10 @@ static Ins* lower_call(Fn* func,
           emit(Ocopy, Kl, into, copy_ref, R);
         } else {
           assert(arg->style == APS_CopyAndPointerOnStack);
-          die("todo; copy and pointer on stack");
+          Ref slot = newtmp("abi.off", Kl, func);
+          emit(Ostorel, 0, R, copy_ref, slot);
+          emit(Oadd, Kl, slot, arg_stack_slots, getcon(slot_offset, func));
+          slot_offset += 8;
         }
         break;
       }
