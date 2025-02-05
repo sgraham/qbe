@@ -322,7 +322,18 @@ static Ins* lower_call(Fn* func,
       }
       case APS_InlineOnStack: {
         Ref slot = newtmp("abi.off", Kl, func);
-        emit(Ostorel, 0, R, instr->arg[0], slot);
+        if (instr->op == Oargc) {
+          // This is a small struct, so it's not passed by copy, but the
+          // instruction is a pointer. So we need to copy it into the stack
+          // slot. (And, remember that these are emitted backwards, so store,
+          // then load.)
+          Ref smalltmp = newtmp("abi.smalltmp", arg->cls, func);
+          emit(Ostorel, 0, R, smalltmp, slot);
+          emit(Oload, arg->cls, smalltmp, instr->arg[1], R);
+        } else {
+          // Stash the value into the stack slot.
+          emit(Ostorel, 0, R, instr->arg[0], slot);
+        }
         emit(Oadd, Kl, slot, arg_stack_slots, getcon(slot_offset, func));
         slot_offset += arg->size;
         break;
