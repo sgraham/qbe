@@ -2,22 +2,32 @@
 
 #include <stdbool.h>
 
-typedef struct AClass AClass;
-typedef struct RAlloc RAlloc;
+typedef enum ArgPassStyle {
+  APS_Register,
+  APS_InlineOnStack,
+  APS_CopyAndPointer,
+} ArgPassStyle;
 
-struct AClass {
+typedef struct ArgClass {
   Typ* type;
-  int inmem;
+  ArgPassStyle style;
   int align;
   uint size;
-  int cls[2];
-  Ref ref[2];
-};
+  int cls;
+  Ref ref;
+} ArgClass;
 
+typedef struct RAlloc RAlloc;
 struct RAlloc {
   Ins instr;
   RAlloc* link;
 };
+
+#define ALIGN_DOWN(n, a) ((n) & ~((a)-1))
+#define ALIGN_UP(n, a) ALIGN_DOWN((n) + (a)-1, (a))
+
+// Number of stack bytes required be reserved for the callee.
+#define SHADOW_SPACE_SIZE 32
 
 int amd64_winabi_rsave[] = {RCX,  RDX,   R8,    R9,    R10,   R11,   RAX,  XMM0,
                             XMM1, XMM2,  XMM3,  XMM4,  XMM5,  XMM6,  XMM7, XMM8,
@@ -613,78 +623,161 @@ selvastart(Fn *fn, int fa, Ref ap)
 
 #endif
 
-bits amd64_winabi_retregs(Ref r, int p[2]) {
-  abort();
-  bits b;
-  int ni, nf;
+// layout of call's second argument (RCall)
+//
+// bit 0: rax returned
+// bit 1: xmm0 returns
+// bits 2,3: 0
+// bits 4567: rcx, rdx, r8, r9 passed
+// bits 89ab: xmm0,1,2,3 passed
+// bits c..1f: 0
 
+bits amd64_winabi_retregs(Ref r, int p[2]) {
   assert(rtype(r) == RCall);
-  b = 0;
-  ni = r.val & 3;
-  nf = (r.val >> 2) & 3;
-  if (ni == 1) {
+
+  bits b = 0;
+  int num_int_returns = r.val & 1;
+  int num_float_returns = r.val & 2;
+  if (num_int_returns == 1) {
     b |= BIT(RAX);
   } else {
     b |= BIT(XMM0);
   }
   if (p) {
-    p[0] = ni;
-    p[1] = nf;
+    p[0] = num_int_returns;
+    p[1] = num_float_returns;
   }
   return b;
 }
 
-bits amd64_winabi_argregs(Ref r, int p[2]) {
-  abort();
-  bits b;
-  int j, ni, nf, ra;
-
-  assert(rtype(r) == RCall);
-  b = 0;
-  ni = (r.val >> 4) & 15;
-  nf = (r.val >> 8) & 15;
-  ra = (r.val >> 12) & 1;
-  for (j = 0; j < ni; j++) {
-    b |= BIT(amd64_winabi_rsave[j]);
-  }
-  for (j = 0; j < nf; j++) {
-    b |= BIT(XMM0 + j);
-  }
-  if (p) {
-    p[0] = ni + ra;
-    p[1] = nf;
-  }
-  return b | (ra ? BIT(RAX) : 0);
+static uint popcnt(bits b) {
+  b = (b & 0x5555555555555555) + ((b >> 1) & 0x5555555555555555);
+  b = (b & 0x3333333333333333) + ((b >> 2) & 0x3333333333333333);
+  b = (b & 0x0f0f0f0f0f0f0f0f) + ((b >> 4) & 0x0f0f0f0f0f0f0f0f);
+  b += (b >> 8);
+  b += (b >> 16);
+  b += (b >> 32);
+  return b & 0xff;
 }
 
-// layout of call's second argument (RCall)
-//
-//  29     12    8    4  2  0
-//  |0...00|x|xxxx|xxxx|xx|xx|                  range
-//          |    |    |  |  ` gp regs returned (0..2)
-//          |    |    |  ` sse regs returned   (0..2)
-//          |    |    ` gp regs passed         (0..6)
-//          |    ` sse regs passed             (0..8)
-//          ` 1 if rax is used to pass data    (0..1)
-//
-// TODO: this is copied from SysV as it probably has to match for later code.
-// I think varargs is the only thing on SysV that requires the rax passing, but
-// Win64 doesn't do that for varargs.
+bits amd64_winabi_argregs(Ref r, int p[2]) {
+  assert(rtype(r) == RCall);
 
-typedef struct UsedRegisters {
-} UsedRegisters;
+  // On SysV, these are counts. Here, a count isn't sufficient, we actually need
+  // to know which ones are in use because they're not necessarily
+  // "contiguous".
+  int int_passed = (r.val >> 4) & 15;
+  int float_passed = (r.val >> 8) & 15;
 
-static int classify_arguments(Ins* earliest_arg_instr,
-                              Ins* call_instr,
-                              AClass* arg_classes,
-                              int op_base,
-                              AClass* return_class) {
+  bits b = 0;
+  b |= (int_passed & 1) ? BIT(RCX) : 0;
+  b |= (int_passed & 2) ? BIT(RDX) : 0;
+  b |= (int_passed & 4) ? BIT(R8) : 0;
+  b |= (int_passed & 8) ? BIT(R9) : 0;
+  b |= (float_passed & 1) ? BIT(XMM0) : 0;
+  b |= (float_passed & 2) ? BIT(XMM1) : 0;
+  b |= (float_passed & 4) ? BIT(XMM2) : 0;
+  b |= (float_passed & 8) ? BIT(XMM3) : 0;
+  if (p) {
+    // TODO: The only place this is used is live.c. I'm not sure what should be
+    // returned here wrt to using the same counter for int/float regs on win.
+    // For now, try the number of registers in use.
+    p[0] = popcnt(int_passed);
+    p[1] = popcnt(float_passed);
+  }
+  return b;
+}
+
+typedef struct RegisterUsage {
+  // Counter for both int/float as they're counted together. Only if the bool's
+  // set in regs_passed is the given register *actually* needed for a value
+  // (i.e. needs to be saved, etc.)
+  int num_regs_passed;
+
+  // Indexed first by 0=int, 1=float, use KBASE(cls).
+  // Indexed second by register index in calling convention, so for integer,
+  // 0=RCX, 1=RDX, 2=R8, 3=R9, and for float XMM0, XMM1, XMM2, XMM3.
+  bool regs_passed[2][4];
+
+  bool rax_returned;
+  bool xmm0_returned;
+} RegisterUsage;
+
+static int register_usage_to_call_arg_value(RegisterUsage reg_usage) {
+  return (reg_usage.rax_returned << 0) |  //
+         (reg_usage.xmm0_returned << 1) |  //
+         (reg_usage.regs_passed[0][0] << 4) |          //
+         (reg_usage.regs_passed[0][1] << 5) |          //
+         (reg_usage.regs_passed[0][2] << 6) |          //
+         (reg_usage.regs_passed[0][3] << 7) |          //
+         (reg_usage.regs_passed[1][0] << 8) |          //
+         (reg_usage.regs_passed[1][1] << 9) |          //
+         (reg_usage.regs_passed[1][2] << 10) |         //
+         (reg_usage.regs_passed[1][3] << 11);
+}
+
+// This function is used for both arguments and parameters.
+static RegisterUsage classify_arguments(Ins* earliest_arg_instr,
+                                        Ins* call_instr,
+                                        ArgClass* arg_classes,
+                                        ArgClass* return_class) {
+  RegisterUsage reg_usage = {0};
+  assert(!return_class && "todo");
+
+  ArgClass* arg = arg_classes;
+  // For each argument, determine how it will be passed (int, float, stack)
+  // and update the `reg_usage` counts. Additionally, fill out arg_classes for
+  // each argument.
+  for (Ins* instr = earliest_arg_instr; instr < call_instr; ++instr, ++arg) {
+    switch (instr->op) {
+      case Oarg:
+      case Opar:
+        if (reg_usage.num_regs_passed == 4) {
+          arg->style = APS_InlineOnStack;
+        } else {
+          reg_usage.regs_passed[KBASE(instr->cls)][reg_usage.num_regs_passed] =
+              true;
+          ++reg_usage.num_regs_passed;
+          arg->style = APS_Register;
+        }
+        arg->align = 3;
+        arg->size = 8;
+        arg->cls = instr->cls;
+        break;
+      case Oargc:
+      case Oparc:
+        break;
+      case Oarge:
+      case Opare:
+        die("not implemented");
+      case Oargv:
+        die("todo; varargs!");
+    }
+  }
+
+  return reg_usage;
+}
+
+static bool is_integer_type(int ty) {
+  assert(ty >= 0 && ty < 4 && "expecting Kw Kl Ks Kd");
+  return KBASE(ty) == 0;
+}
+
+static Ref register_for_arg(int cls, int counter) {
+  assert(counter < 4);
+  if (is_integer_type(cls)) {
+    return TMP(amd64_winabi_rsave[counter]);
+  } else {
+    return TMP(XMM0 + counter);
+  }
 }
 
 static Ins* lower_call(Fn* func,
                        Blk* block,
                        Ins* call_instr,
                        RAlloc** pralloc) {
+  (void)pralloc;
+
   // Call arguments are instructions. Walk through them to find the end of the
   // call+args that we need to process (and return the instruction past the body
   // of the instruction for continuing processing).
@@ -696,19 +789,104 @@ static Ins* lower_call(Fn* func,
   }
   Ins* earliest_arg_instr = instr_past_args + 1;
 
-  // Don't need an AClass for the call itself, so one less than the total number
-  // of instructions we're dealing with.
-  AClass* arg_classes =
-      alloc((call_instr - earliest_arg_instr) * sizeof(AClass));
+  // Don't need an ArgClass for the call itself, so one less than the total
+  // number of instructions we're dealing with.
+  uint num_args = call_instr - earliest_arg_instr;
+  ArgClass* arg_classes = alloc(num_args * sizeof(ArgClass));
 
   // Ocall's two arguments are the the function to be called in 0, and, if the
   // the function returns a non-basic type, then arg[1] is a reference to the
   // type of the return.
   // TODO: doesn't do anything with `env`, I don't understand that feature yet.
+  RegisterUsage reg_usage;
   if (req(call_instr->arg[1], R)) {  // req checks if Refs are equal; `R` is 0.
-    classify_arguments(earliest_arg_instr, call_instr, arg_classes, Oarg, NULL);
+    reg_usage =
+        classify_arguments(earliest_arg_instr, call_instr, arg_classes, NULL);
   } else {
     abort();
+  }
+
+  // We now know which arguments are on the stack and which are in registers, so
+  // we can allocate the correct amount of space to stash the stack-located ones
+  // into.
+  uint stack_usage = 0;
+  for (uint i = 0; i < num_args; ++i) {
+    ArgClass* arg = &arg_classes[i];
+    if (arg->style != APS_Register) {
+      if (arg->align > 4) {
+        err("win abi cannot pass alignments > 16");
+      }
+      stack_usage += arg->size;
+      // TODO: SysV does something strange with align 16 here that I'm not sure
+      // is right? need some tests to figure out what's going on.
+    }
+  }
+  stack_usage = ALIGN_UP(stack_usage, 16);
+
+  // Note that here we're logically 'after' the call (due to emitting
+  // instructions in reverse order), so we're doing a negative stack
+  // allocation to clean up after the call.
+  Ref stack_size_ref =
+      getcon(-(int64_t)(stack_usage + SHADOW_SPACE_SIZE), func);
+  emit(Osalloc, Kl, R, stack_size_ref, R);
+
+  RAlloc* return_pad = NULL;
+  if (req(call_instr->arg[1], R)) {
+    // If only a basic type returned from the call.
+    if (is_integer_type(call_instr->cls)) {
+      emit(Ocopy, call_instr->cls, call_instr->to, TMP(RAX), R);
+      reg_usage.rax_returned = true;
+    } else {
+      emit(Ocopy, call_instr->cls, call_instr->to, TMP(XMM0), R);
+      reg_usage.xmm0_returned = true;
+    }
+  } else {
+    // TODO: hidden first arg for structs by value here
+    abort();
+  }
+
+  // Emit the actual call instruction. There's no 'to' value by this point
+  // because we've lowered it into register manipulation (that's the `R`),
+  // arg[0] of the call is the function, and arg[1] is register usage is
+  // documented as above (copied from SysV).
+  emit(Ocall, call_instr->cls, R, call_instr->arg[0],
+       CALL(register_usage_to_call_arg_value(reg_usage)));
+
+  int reg_counter = 0;
+
+  // TODO: pass hidden first arg here in rcx
+
+  // This is where we actually do the load of values into registers.
+  ArgClass* arg = arg_classes;
+  for (Ins* instr = earliest_arg_instr; instr != call_instr; ++instr, ++arg) {
+    switch (arg->style) {
+      case APS_Register: {
+        Ref into = register_for_arg(arg->cls, reg_counter++);
+        if (instr->op == Oargc) {
+          // If this is a struct being passed by value.
+          abort();
+        } else {
+          emit(Ocopy, instr->cls, into, instr->arg[0], R);
+        }
+        break;
+      }
+      default:
+        die("todo");
+    }
+  }
+
+  if (stack_usage) {
+    Ref temps_base_ref = newtmp("abi.temps", Kl, func);
+
+    // The last (first in call order) thing we do is allocate the the stack space
+    // we're going to fill with temporaries.
+    emit(Osalloc, Kl, temps_base_ref,
+         getcon(stack_usage + SHADOW_SPACE_SIZE, func), R);
+  } else {
+    // When there's no usage for temporaries, we can add this into the other
+    // alloca, but otherwise emit it separately (not storing into a reference)
+    // so that it doesn't removed later for being useless.
+    emit(Osalloc, Kl, R, getcon(SHADOW_SPACE_SIZE, func), R);
   }
 
   return instr_past_args;
@@ -779,7 +957,7 @@ static void lower_args_for_block(Fn* func, Blk* block, RAlloc** pralloc) {
 //   argument (which then itself *also* be copied to the stack in the case
 //   there's no integer register remaining.)
 void amd64_winabi_abi(Fn* fn) {
-  fprintf(stderr, "-------- BEFORE %s:\n", __FUNCTION__);
+  fprintf(stderr, "-------- BEFORE amd64_winabi_abi:\n");
   printfn(fn, stderr);
 
   // Reset |visit| flags for each block of the function. These are a
@@ -806,7 +984,7 @@ void amd64_winabi_abi(Fn* fn) {
   }
   lower_args_for_block(fn, fn->start, &ralloc);
 
-  fprintf(stderr, "-------- AFTER %s:\n", __FUNCTION__);
+  fprintf(stderr, "-------- AFTER amd64_winabi_abis:\n");
   printfn(fn, stderr);
 
 #if 0
