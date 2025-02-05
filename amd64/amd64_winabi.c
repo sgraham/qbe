@@ -1,23 +1,23 @@
 #include "amd64_all.h"
 
+#include <stdbool.h>
+
 typedef struct AClass AClass;
 typedef struct RAlloc RAlloc;
 
 struct AClass {
-	Typ *type;
-	int inmem;
-	int align;
-	uint size;
-	int cls[2];
-	Ref ref[2];
+  Typ* type;
+  int inmem;
+  int align;
+  uint size;
+  int cls[2];
+  Ref ref[2];
 };
 
 struct RAlloc {
-	Ins i;
-	RAlloc *link;
+  Ins instr;
+  RAlloc* link;
 };
-
-// Ref: https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention
 
 int amd64_winabi_rsave[] = {RCX,  RDX,   R8,    R9,    R10,   R11,   RAX,  XMM0,
                             XMM1, XMM2,  XMM3,  XMM4,  XMM5,  XMM6,  XMM7, XMM8,
@@ -25,10 +25,10 @@ int amd64_winabi_rsave[] = {RCX,  RDX,   R8,    R9,    R10,   R11,   RAX,  XMM0,
 int amd64_winabi_rclob[] = {RBX, R12, R13, R14, R15, RSI, RDI, -1};
 
 MAKESURE(winabi_arrays_ok,
-	sizeof amd64_winabi_rsave == (NGPS_WIN+NFPS+1) * sizeof(int) &&
-	sizeof amd64_winabi_rclob == (NCLR_WIN+1) * sizeof(int)
-);
+         sizeof amd64_winabi_rsave == (NGPS_WIN + NFPS + 1) * sizeof(int) &&
+             sizeof amd64_winabi_rclob == (NCLR_WIN + 1) * sizeof(int));
 
+#if 0
 static void
 classify(AClass *a, Typ *t, uint s)
 {
@@ -188,8 +188,17 @@ argsclass(Ins *i0, Ins *i1, AClass *ac, int op, AClass *aret, Ref *env)
 		case Oargc:
 			n = i->arg[0].val;
 			typclass(a, &typ[n]);
-			if (a->inmem)
+			if (a->inmem) {
+				if (nint > 0) {
+					--nint;
+				}
+				a->align = 3;
+				a->size = 8;
+				a->cls[0] = i->cls;
 				continue;
+			}
+			abort(); // this is probably wrong for win
+			/*
 			ni = ns = 0;
 			for (n=0; (uint)n*8<a->size; n++)
 				if (KBASE(a->cls[n]) == 0)
@@ -201,6 +210,7 @@ argsclass(Ins *i0, Ins *i1, AClass *ac, int op, AClass *aret, Ref *env)
 				nsse -= ns;
 			} else
 				a->inmem = 1;
+				*/
 			break;
 		case Oarge:
 			envc = 1;
@@ -222,49 +232,6 @@ argsclass(Ins *i0, Ins *i1, AClass *ac, int op, AClass *aret, Ref *env)
 	return ((varc|envc) << 12) | ((4-nint) << 4) | ((8-nsse) << 8);
 }
 
-bits
-amd64_winabi_retregs(Ref r, int p[2])
-{
-	bits b;
-	int ni, nf;
-
-	assert(rtype(r) == RCall);
-	b = 0;
-	ni = r.val & 3;
-	nf = (r.val >> 2) & 3;
-	if (ni == 1)
-		b |= BIT(RAX);
-	else
-		b |= BIT(XMM0);
-	if (p) {
-		p[0] = ni;
-		p[1] = nf;
-	}
-	return b;
-}
-
-bits
-amd64_winabi_argregs(Ref r, int p[2])
-{
-	bits b;
-	int j, ni, nf, ra;
-
-	assert(rtype(r) == RCall);
-	b = 0;
-	ni = (r.val >> 4) & 15;
-	nf = (r.val >> 8) & 15;
-	ra = (r.val >> 12) & 1;
-	for (j=0; j<ni; j++)
-		b |= BIT(amd64_winabi_rsave[j]);
-	for (j=0; j<nf; j++)
-		b |= BIT(XMM0+j);
-	if (p) {
-		p[0] = ni + ra;
-		p[1] = nf;
-	}
-	return b | (ra ? BIT(RAX) : 0);
-}
-
 static Ref
 rarg(int ty, int *ni, int *ns)
 {
@@ -283,6 +250,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 	uint stk, off;
 	Ref r, r1, r2, reg[2], env;
 	RAlloc *ra;
+	RAlloc *copya;
 
 	env = R;
 	ac = alloc((i1-i0) * sizeof ac[0]);
@@ -294,22 +262,28 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 	} else
 		ca = argsclass(i0, i1, ac, Oarg, 0, &env);
 
+#if 0
 	for (stk=0, a=&ac[i1-i0]; a>ac;)
 		if ((--a)->inmem) {
 			if (a->align > 4)
 				err("win abi requires alignments of 16 or less");
-			stk += a->size;
+			r1 = newtmp("ptrcpy", Kl, fn);
+			copya = alloc(sizeof *copya);
+			al = aret.align >= 2 ? aret.align - 2 : 0;
+			copya->i = (Ins){Oalloc+al, Kl, r1, {getcon(a->size, fn)}};
+			copya->link = (*rap);
+			*rap = copya;
+			stk += 8;
 			if (a->align == 4)
 				stk += stk & 15;
 		}
 	stk += stk & 15;
+#endif
 	/* shadow space. TODO: would perhaps be better to do this when !fn->leaf in
 	 * the head of the function, rather than before/after every call. */
-	stk += 32;
-	if (stk) {
-		r = getcon(-(int64_t)stk, fn);
-		emit(Osalloc, Kl, R, r, R);
-	}
+	stk = 32;
+	r = getcon(-(int64_t)stk, fn);
+	emit(Osalloc, Kl, R, r, R);
 
 	if (!req(i1->arg[1], R)) {
 		if (aret.inmem) {
@@ -355,6 +329,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 		}
 	}
 
+        printref(i1->arg[0], fn, stderr); fprintf(stderr, "\n");
 	emit(Ocall, i1->cls, R, i1->arg[0], CALL(ca));
 
 	if (!req(R, env))
@@ -367,10 +342,10 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 		emit(Ocopy, Kl, rarg(Kl, &ni, &ns), ra->i.to, R); /* pass hidden argument */
 
 	for (i=i0, a=ac; i<i1; i++, a++) {
-		if (i->op >= Oarge || a->inmem)
+		if (i->op >= Oarge)
 			continue;
 		r1 = rarg(a->cls[0], &ni, &ns);
-		if (i->op == Oargc) {
+		/*if (i->op == Oargc) {
 			if (a->size > 8) {
 				r2 = rarg(a->cls[1], &ni, &ns);
 				r = newtmp("abi", Kl, fn);
@@ -378,7 +353,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 				emit(Oadd, Kl, r, i->arg[1], getcon(8, fn));
 			}
 			emit(Oload, a->cls[0], r1, i->arg[1], R);
-		} else
+		} else*/
 			emit(Ocopy, i->cls, r1, i->arg[0], R);
 	}
 
@@ -401,10 +376,9 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 		off += a->size;
 	}
 
-	emit(Osalloc, Kl, R, getcon(stk, fn), R);
 	emit(Osalloc, Kl, r, getcon(stk, fn), R);
 	if (off == 0) {
-		/* hack to not drop the alloc even if it's otherwise 'unused' */
+		/* hack to not drop the salloc even if it's otherwise unused */
 		emit(Ocopy, Kl, r, r, R);
 	}
 }
@@ -637,28 +611,220 @@ selvastart(Fn *fn, int fa, Ref ap)
 	emit(Ostorew, Kw, R, getcon(gp, fn), ap);
 }
 
-void
-amd64_winabi_abi(Fn *fn)
-{
-	Blk *b;
-	Ins *i, *i0, *ip;
-	RAlloc *ral;
-	int n, fa;
+#endif
 
-	for (b=fn->start; b; b=b->link)
-		b->visit = 0;
+bits amd64_winabi_retregs(Ref r, int p[2]) {
+  abort();
+  bits b;
+  int ni, nf;
 
-	/* lower parameters */
-	for (b=fn->start, i=b->ins; i<&b->ins[b->nins]; i++)
-		if (!ispar(i->op))
-			break;
-	fa = selpar(fn, b->ins, i);
-	n = b->nins - (i - b->ins) + (&insb[NIns] - curi);
-	i0 = alloc(n * sizeof(Ins));
-	ip = icpy(ip = i0, curi, &insb[NIns] - curi);
-	ip = icpy(ip, i, &b->ins[b->nins] - i);
-	b->nins = n;
-	b->ins = i0;
+  assert(rtype(r) == RCall);
+  b = 0;
+  ni = r.val & 3;
+  nf = (r.val >> 2) & 3;
+  if (ni == 1) {
+    b |= BIT(RAX);
+  } else {
+    b |= BIT(XMM0);
+  }
+  if (p) {
+    p[0] = ni;
+    p[1] = nf;
+  }
+  return b;
+}
+
+bits amd64_winabi_argregs(Ref r, int p[2]) {
+  abort();
+  bits b;
+  int j, ni, nf, ra;
+
+  assert(rtype(r) == RCall);
+  b = 0;
+  ni = (r.val >> 4) & 15;
+  nf = (r.val >> 8) & 15;
+  ra = (r.val >> 12) & 1;
+  for (j = 0; j < ni; j++) {
+    b |= BIT(amd64_winabi_rsave[j]);
+  }
+  for (j = 0; j < nf; j++) {
+    b |= BIT(XMM0 + j);
+  }
+  if (p) {
+    p[0] = ni + ra;
+    p[1] = nf;
+  }
+  return b | (ra ? BIT(RAX) : 0);
+}
+
+// layout of call's second argument (RCall)
+//
+//  29     12    8    4  2  0
+//  |0...00|x|xxxx|xxxx|xx|xx|                  range
+//          |    |    |  |  ` gp regs returned (0..2)
+//          |    |    |  ` sse regs returned   (0..2)
+//          |    |    ` gp regs passed         (0..6)
+//          |    ` sse regs passed             (0..8)
+//          ` 1 if rax is used to pass data    (0..1)
+//
+// TODO: this is copied from SysV as it probably has to match for later code.
+// I think varargs is the only thing on SysV that requires the rax passing, but
+// Win64 doesn't do that for varargs.
+
+typedef struct UsedRegisters {
+} UsedRegisters;
+
+static int classify_arguments(Ins* earliest_arg_instr,
+                              Ins* call_instr,
+                              AClass* arg_classes,
+                              int op_base,
+                              AClass* return_class) {
+}
+
+static Ins* lower_call(Fn* func,
+                       Blk* block,
+                       Ins* call_instr,
+                       RAlloc** pralloc) {
+  // Call arguments are instructions. Walk through them to find the end of the
+  // call+args that we need to process (and return the instruction past the body
+  // of the instruction for continuing processing).
+  Ins* instr_past_args = call_instr - 1;
+  for (; instr_past_args >= block->ins; --instr_past_args) {
+    if (!isarg(instr_past_args->op)) {
+      break;
+    }
+  }
+  Ins* earliest_arg_instr = instr_past_args + 1;
+
+  // Don't need an AClass for the call itself, so one less than the total number
+  // of instructions we're dealing with.
+  AClass* arg_classes =
+      alloc((call_instr - earliest_arg_instr) * sizeof(AClass));
+
+  // Ocall's two arguments are the the function to be called in 0, and, if the
+  // the function returns a non-basic type, then arg[1] is a reference to the
+  // type of the return.
+  // TODO: doesn't do anything with `env`, I don't understand that feature yet.
+  if (req(call_instr->arg[1], R)) {  // req checks if Refs are equal; `R` is 0.
+    classify_arguments(earliest_arg_instr, call_instr, arg_classes, Oarg, NULL);
+  } else {
+    abort();
+  }
+
+  return instr_past_args;
+}
+
+static void lower_args_for_block(Fn* func, Blk* block, RAlloc** pralloc) {
+  if (block->visit) {
+    return;
+  }
+
+  // global temporary buffer used by emit. Reset to the end, and predecremented
+  // when adding to it.
+  curi = &insb[NIns];
+
+  // lower_block_returns(func, block);
+
+  // Work backwards through the instructions, either copying them unchanged, or
+  // modifying as necessary.
+  for (Ins* instr = &block->ins[block->nins - 1]; instr >= block->ins;) {
+    switch (instr->op) {
+      case Ocall:
+        instr = lower_call(func, block, instr, pralloc);
+        break;
+      case Ovastart:
+      case Ovaarg:
+        die("todo!");
+      case Oarg:
+      case Oargc:
+        die("unreachable");
+      default:
+        emiti(*instr);
+        --instr;
+        break;
+    }
+  }
+
+  // This it the start block, which is processed last. Add any allocas that
+  // other blocks needed.
+  bool is_start_block = block == func->start;
+  if (is_start_block) {
+    for (RAlloc* ralloc = *pralloc; ralloc; ralloc = ralloc->link) {
+      emiti(ralloc->instr);
+    }
+  }
+
+  // emit/emiti add instructions from the end to the beginning of the temporary
+  // global buffer. dup the final version into the final block storage.
+  block->nins = &insb[NIns] - curi;
+  idup(&block->ins, curi, block->nins);
+}
+
+// The main job of this function is to lower generic instructions into the
+// specific details of how arguments are passed, and parameters are
+// interpreted for win x64. A useful reference is
+// https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention .
+//
+// Some of the major differences from SysV if you're comparing the code
+// (non-exhaustive of course):
+// - only 4 int and 4 float regs are used
+// - when an int register is assigned a value, its associated float register is
+//   left unused (and vice versa). i.e. there's only one counter as you assign
+//   arguments to registers.
+// - any structs that aren't 1/2/4/8 bytes in size are passed by pointer, not
+//   by copying them into the stack. So e.g. if you pass something like
+//   `struct { void*, int64_t }` by value, it first needs to be copied to
+//   another alloca (in order to maintain value semantics at the language
+//   level), then the pointer to that copy is treated as a regular integer
+//   argument (which then itself *also* be copied to the stack in the case
+//   there's no integer register remaining.)
+void amd64_winabi_abi(Fn* fn) {
+  fprintf(stderr, "-------- BEFORE %s:\n", __FUNCTION__);
+  printfn(fn, stderr);
+
+  // Reset |visit| flags for each block of the function. These are a
+  // flag/counter to know when a processing step has already done something to
+  // the block.
+  for (Blk* block = fn->start; block; block = block->link) {
+    block->visit = 0;
+  }
+
+  // The first thing to do is lower incoming parameters to this function.
+
+  // This is the second larger part of the job. We walk all blocks, and rewrite
+  // instructions returns, calls, and handling of varargs into their win x64
+  // specific versions. Any other instructions are just passed through unchanged
+  // by using `emiti`.
+
+  // Skip over the entry block, and do it at the end so that our later
+  // modifications can add allocations to the start block. In particular, we
+  // need to add stack allocas for copies when structs are passed or returned by
+  // value.
+  RAlloc* ralloc = NULL;
+  for (Blk* block = fn->start->link; block; block = block->link) {
+    lower_args_for_block(fn, block, &ralloc);
+  }
+  lower_args_for_block(fn, fn->start, &ralloc);
+
+  fprintf(stderr, "-------- AFTER %s:\n", __FUNCTION__);
+  printfn(fn, stderr);
+
+#if 0
+  /* lower parameters */
+  for (b = fn->start, i = b->ins; i < &b->ins[b->nins]; i++) {
+    if (!ispar(i->op)) {
+      break;
+    }
+  }
+  fa = selpar(fn, b->ins, i);
+  n = b->nins - (i - b->ins) + (&insb[NIns] - curi);
+  i0 = alloc(n * sizeof(Ins));
+  ip = icpy(ip = i0, curi, &insb[NIns] - curi);
+  ip = icpy(ip, i, &b->ins[b->nins] - i);
+  b->nins = n;
+  b->ins = i0;
+#endif
+#if 0
 
 	/* lower calls, returns, and vararg instructions */
 	ral = 0;
@@ -698,9 +864,10 @@ amd64_winabi_abi(Fn *fn)
 		b->nins = &insb[NIns] - curi;
 		idup(&b->ins, curi, b->nins);
 	} while (b != fn->start);
+#endif
 
-	if (debug['A']) {
-		fprintf(stderr, "\n> After ABI lowering:\n");
-		printfn(fn, stderr);
-	}
+  if (debug['A']) {
+    fprintf(stderr, "\n> After ABI lowering:\n");
+    printfn(fn, stderr);
+  }
 }
