@@ -3,9 +3,11 @@
 #include <stdbool.h>
 
 typedef enum ArgPassStyle {
+  APS_Invalid = 0,
   APS_Register,
   APS_InlineOnStack,
-  APS_CopyAndPointer,
+  APS_CopyAndPointerInRegister,
+  APS_CopyAndPointerOnStack,
 } ArgPassStyle;
 
 typedef struct ArgClass {
@@ -17,10 +19,10 @@ typedef struct ArgClass {
   Ref ref;
 } ArgClass;
 
-typedef struct RAlloc RAlloc;
-struct RAlloc {
+typedef struct ExtraAlloc ExtraAlloc;
+struct ExtraAlloc {
   Ins instr;
-  RAlloc* link;
+  ExtraAlloc* link;
 };
 
 #define ALIGN_DOWN(n, a) ((n) & ~((a)-1))
@@ -716,6 +718,22 @@ static int register_usage_to_call_arg_value(RegisterUsage reg_usage) {
          (reg_usage.regs_passed[1][3] << 11);
 }
 
+// Assigns the argument to a register if there's any left according to the
+// calling convention, and updates the regs_passed bools. Otherwise marks the
+// value as needing stack space to be passed.
+static void assign_register_or_stack(RegisterUsage* reg_usage,
+                                     ArgClass* arg,
+                                     bool is_float,
+                                     bool by_copy) {
+  if (reg_usage->num_regs_passed == 4) {
+    arg->style = by_copy ? APS_CopyAndPointerOnStack : APS_InlineOnStack;
+  } else {
+    reg_usage->regs_passed[is_float][reg_usage->num_regs_passed] = true;
+    ++reg_usage->num_regs_passed;
+    arg->style = by_copy ? APS_CopyAndPointerInRegister : APS_Register;
+  }
+}
+
 // This function is used for both arguments and parameters.
 static RegisterUsage classify_arguments(Ins* earliest_arg_instr,
                                         Ins* call_instr,
@@ -732,21 +750,26 @@ static RegisterUsage classify_arguments(Ins* earliest_arg_instr,
     switch (instr->op) {
       case Oarg:
       case Opar:
-        if (reg_usage.num_regs_passed == 4) {
-          arg->style = APS_InlineOnStack;
-        } else {
-          reg_usage.regs_passed[KBASE(instr->cls)][reg_usage.num_regs_passed] =
-              true;
-          ++reg_usage.num_regs_passed;
-          arg->style = APS_Register;
-        }
+        assign_register_or_stack(&reg_usage, arg, KBASE(instr->cls),
+                                 /*by_copy=*/false);
+        arg->cls = instr->cls;
         arg->align = 3;
         arg->size = 8;
-        arg->cls = instr->cls;
         break;
       case Oargc:
-      case Oparc:
+      case Oparc: {
+        int typ_index = instr->arg[0].val;
+        Typ* type = &typ[typ_index];
+        // Note that only these sizes are passed by register, even though e.g. a
+        // 5 byte struct would "fit", it still is passed by copy-and-pointer.
+        bool by_copy = (type->isdark || (type->size != 1 && type->size != 2 &&
+                                         type->size != 4 && type->size != 8));
+        assign_register_or_stack(&reg_usage, arg, /*is_float=*/false, by_copy);
+        arg->cls = Kl;
+        arg->align = 3;
+        arg->size = type->size;
         break;
+      }
       case Oarge:
       case Opare:
         die("not implemented");
@@ -775,8 +798,8 @@ static Ref register_for_arg(int cls, int counter) {
 static Ins* lower_call(Fn* func,
                        Blk* block,
                        Ins* call_instr,
-                       RAlloc** pralloc) {
-  (void)pralloc;
+                       ExtraAlloc** pextra_alloc) {
+  (void)pextra_alloc;
 
   // Call arguments are instructions. Walk through them to find the end of the
   // call+args that we need to process (and return the instruction past the body
@@ -812,13 +835,16 @@ static Ins* lower_call(Fn* func,
   uint stack_usage = 0;
   for (uint i = 0; i < num_args; ++i) {
     ArgClass* arg = &arg_classes[i];
-    if (arg->style != APS_Register) {
+    // stack_usage only accounts for pushes that are for values that don't have
+    // enough registers. Large struct copies are alloca'd separately, and then
+    // only have (potentially) 8 bytes to add to stack_usage here.
+    if (arg->style == APS_InlineOnStack) {
       if (arg->align > 4) {
         err("win abi cannot pass alignments > 16");
       }
       stack_usage += arg->size;
-      // TODO: SysV does something strange with align 16 here that I'm not sure
-      // is right? need some tests to figure out what's going on.
+    } else if (arg->style == APS_CopyAndPointerOnStack) {
+      stack_usage += 8;
     }
   }
   stack_usage = ALIGN_UP(stack_usage, 16);
@@ -830,7 +856,7 @@ static Ins* lower_call(Fn* func,
       getcon(-(int64_t)(stack_usage + SHADOW_SPACE_SIZE), func);
   emit(Osalloc, Kl, R, stack_size_ref, R);
 
-  RAlloc* return_pad = NULL;
+  ExtraAlloc* return_pad = NULL;
   if (req(call_instr->arg[1], R)) {
     // If only a basic type returned from the call.
     if (is_integer_type(call_instr->cls)) {
@@ -863,15 +889,41 @@ static Ins* lower_call(Fn* func,
       case APS_Register: {
         Ref into = register_for_arg(arg->cls, reg_counter++);
         if (instr->op == Oargc) {
-          // If this is a struct being passed by value.
-          abort();
+          // If this is a small struct being passed by value.
+          die("todo; small struct by val");
         } else {
+          // Otherwise, a normal value passed in a register.
           emit(Ocopy, instr->cls, into, instr->arg[0], R);
         }
         break;
       }
-      default:
-        die("todo");
+      case APS_InlineOnStack:
+        die("todo; inline on stack");
+      case APS_CopyAndPointerInRegister:
+      case APS_CopyAndPointerOnStack: {
+        // Alloca a space to copy into, and blit the value from the instr to the
+        // copied location.
+        ExtraAlloc* arg_copy = alloc(sizeof(ExtraAlloc));
+        Ref copy_ref = newtmp("abi.copy", Kl, func);
+        arg_copy->instr =
+            (Ins){Oalloc8, Kl, copy_ref, {getcon(arg->size, func)}};
+        arg_copy->link = (*pextra_alloc);
+        *pextra_alloc = arg_copy;
+        emit(Oblit1, 0, R, INT(arg->size), R);
+        emit(Oblit0, 0, R, instr->arg[1], copy_ref);
+
+        // Now load the pointer into the correct register or stack slot.
+        if (arg->style == APS_CopyAndPointerInRegister) {
+          Ref into = register_for_arg(arg->cls, reg_counter++);
+          emit(Ocopy, Kl, into, copy_ref, R);
+        } else {
+          assert(arg->style == APS_CopyAndPointerOnStack);
+          die("todo; copy and pointer on stack");
+        }
+        break;
+      }
+      case APS_Invalid:
+        die("unreachable");
     }
   }
 
@@ -892,7 +944,9 @@ static Ins* lower_call(Fn* func,
   return instr_past_args;
 }
 
-static void lower_args_for_block(Fn* func, Blk* block, RAlloc** pralloc) {
+static void lower_args_for_block(Fn* func,
+                                 Blk* block,
+                                 ExtraAlloc** pextra_alloc) {
   if (block->visit) {
     return;
   }
@@ -909,7 +963,7 @@ static void lower_args_for_block(Fn* func, Blk* block, RAlloc** pralloc) {
     for (Ins* instr = &block->ins[block->nins - 1]; instr >= block->ins;) {
       switch (instr->op) {
         case Ocall:
-          instr = lower_call(func, block, instr, pralloc);
+          instr = lower_call(func, block, instr, pextra_alloc);
           break;
         case Ovastart:
         case Ovaarg:
@@ -929,8 +983,8 @@ static void lower_args_for_block(Fn* func, Blk* block, RAlloc** pralloc) {
   // other blocks needed.
   bool is_start_block = block == func->start;
   if (is_start_block) {
-    for (RAlloc* ralloc = *pralloc; ralloc; ralloc = ralloc->link) {
-      emiti(ralloc->instr);
+    for (ExtraAlloc* ea = *pextra_alloc; ea; ea = ea->link) {
+      emiti(ea->instr);
     }
   }
 
@@ -980,7 +1034,7 @@ void amd64_winabi_abi(Fn* fn) {
   // modifications can add allocations to the start block. In particular, we
   // need to add stack allocas for copies when structs are passed or returned by
   // value.
-  RAlloc* ralloc = NULL;
+  ExtraAlloc* ralloc = NULL;
   for (Blk* block = fn->start->link; block; block = block->link) {
     lower_args_for_block(fn, block, &ralloc);
   }
