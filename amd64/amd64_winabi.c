@@ -903,23 +903,25 @@ static void lower_args_for_block(Fn* func, Blk* block, RAlloc** pralloc) {
 
   // lower_block_returns(func, block);
 
-  // Work backwards through the instructions, either copying them unchanged, or
-  // modifying as necessary.
-  for (Ins* instr = &block->ins[block->nins - 1]; instr >= block->ins;) {
-    switch (instr->op) {
-      case Ocall:
-        instr = lower_call(func, block, instr, pralloc);
-        break;
-      case Ovastart:
-      case Ovaarg:
-        die("todo!");
-      case Oarg:
-      case Oargc:
-        die("unreachable");
-      default:
-        emiti(*instr);
-        --instr;
-        break;
+  if (block->ins) {
+    // Work backwards through the instructions, either copying them unchanged,
+    // or modifying as necessary.
+    for (Ins* instr = &block->ins[block->nins - 1]; instr >= block->ins;) {
+      switch (instr->op) {
+        case Ocall:
+          instr = lower_call(func, block, instr, pralloc);
+          break;
+        case Ovastart:
+        case Ovaarg:
+          die("todo!");
+        case Oarg:
+        case Oargc:
+          die("unreachable");
+        default:
+          emiti(*instr);
+          --instr;
+          break;
+      }
     }
   }
 
