@@ -24,22 +24,32 @@ def extract(what, contents):
     return None
 
 
-def test(fn, plat):
+def skip(contents, target):
+    lines = contents.splitlines()
+    if lines and lines[0].startswith("# skip") and lines[0].find(target) >= 0:
+        return True
+    return False
+
+
+def test(fn):
     with open(fn, "r") as f:
         contents = f.read()
-    print("%s: " % fn, end="")
+    print("%s... " % fn, end="")
     output = extract("output", contents)
     driver = extract("driver", contents)
 
-    qbe_target = []
-    if plat == "w":
-        qbe_target = ["-t", "amd64_win"]
-    elif plat == "l":
-        qbe_target = ["-t", "amd64_sysv"]
+    if sys.platform == "win32":
+        target = "amd64_win"
+    elif sys.platform == "linux":
+        target = "amd64_sysv"
     else:
-        error
+        port
 
-    subprocess.run(["./sqbe.exe"] + qbe_target + ["-o", "tmp.s", fn], check=True)
+    if skip(contents, target):
+        print("skip")
+        return
+
+    subprocess.run(["./sqbe.exe", "-t", target, "-o", "tmp.s", fn], check=True)
     to_build = ["tmp.s"]
     if driver:
         with open("driver.c", "w", newline="\n") as f:
@@ -48,7 +58,10 @@ def test(fn, plat):
 
     subprocess.run(["clang", "-g", "-o", "tmp.exe"] + to_build, check=True)
     proc = subprocess.run(
-        ["./tmp.exe", "a", "b", "c"], capture_output=True, universal_newlines=True, check=True
+        ["./tmp.exe", "a", "b", "c"],
+        capture_output=True,
+        universal_newlines=True,
+        check=True,
     )
     if output:
         out = proc.stdout
@@ -66,21 +79,13 @@ def test(fn, plat):
 
 
 def main():
-    plat = "?"
-    if sys.platform == "win32":
-        plat = "w"
-    elif sys.platform == "linux":
-        plat = "l"
-    else:
-        error
-
     if len(sys.argv) < 2:
         for fn in glob.glob("test/*.ssa"):
             if os.path.split(fn)[1].startswith("_"):
                 continue
-            test(fn, plat)
+            test(fn)
     else:
-        test(sys.argv[1], plat)
+        test(sys.argv[1])
 
 
 if __name__ == "__main__":
