@@ -1,3 +1,4 @@
+# skip amd64_win (due to signals, but otherwise should work)
 # test amd64 addressing modes
 
 export
