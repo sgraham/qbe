@@ -8,7 +8,7 @@ call "cl.exe" ^
     rv64/rv64_abi.c rv64/rv64_emit.c rv64/rv64_isel.c rv64/rv64_targ.c ^
     /link /out:sqbe.exe || exit /b
 
-::set FN=test/dark.ssa
+::set FN=test/vararg1.ssa
 ::call python tools/test.py %FN%
 ::sqbe -dPMNCFAILSR -t amd64_win %FN% 2> dump.txt
 
@@ -65,5 +65,5 @@ call python tools/test.py test/strcmp.ssa
 call python tools/test.py test/strspn.ssa
 call python tools/test.py test/sum.ssa
 ::call python tools/test.py test/tls.ssa
-::call python tools/test.py test/vararg1.ssa
+call python tools/test.py test/vararg1.ssa
 ::call python tools/test.py test/vararg2.ssa

@@ -447,6 +447,18 @@ static void lower_vastart(Fn* func,
        getcon(param_reg_usage->num_regs_passed * 8 + 16, func));
 }
 
+static void lower_vaarg(Fn* func, Ins* vaarg_instr) {
+  // va_list is just a void** on winx64, so load the pointer, then load the
+  // argument from that pointer, then increment the pointer to the next arg.
+  // (All emitted backwards as usual.)
+  Ref inc = newtmp("abi.vaarg.inc", Kl, func);
+  Ref ptr = newtmp("abi.vaarg.ptr", Kl, func);
+  emit(Ostorel, Kl, R, inc, vaarg_instr->arg[0]);
+  emit(Oadd, Kl, inc, ptr, getcon(8, func));
+  emit(Oload, vaarg_instr->cls, vaarg_instr->to, ptr, R);
+  emit(Oload, Kl, ptr, vaarg_instr->arg[0], R);
+}
+
 static void lower_args_for_block(Fn* func,
                                  Blk* block,
                                  RegisterUsage* param_reg_usage,
@@ -470,7 +482,9 @@ static void lower_args_for_block(Fn* func,
           --instr;
           break;
         case Ovaarg:
-          die("todo; vaarg");
+          lower_vaarg(func, instr);
+          --instr;
+          break;
         case Oarg:
         case Oargc:
           die("unreachable");
@@ -625,7 +639,7 @@ void amd64_winabi_abi(Fn* func) {
   }
   lower_args_for_block(func, func->start, &param_reg_usage, &extra_alloc);
 
-  //fprintf(stderr, "-------- AFTER amd64_winabi_abis:\n");
+  //fprintf(stderr, "-------- AFTER amd64_winabi_abi:\n");
   //printfn(func, stderr);
 
   if (debug['A']) {
