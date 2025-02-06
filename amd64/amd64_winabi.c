@@ -8,6 +8,7 @@ typedef enum ArgPassStyle {
   APS_InlineOnStack,
   APS_CopyAndPointerInRegister,
   APS_CopyAndPointerOnStack,
+  APS_VarargsTag,
 } ArgPassStyle;
 
 typedef struct ArgClass {
@@ -108,8 +109,7 @@ bits amd64_winabi_argregs(Ref r, int p[2]) {
 typedef struct RegisterUsage {
   // Counter for both int/float as they're counted together. Only if the bool's
   // set in regs_passed is the given register *actually* needed for a value
-  // (i.e. needs to be saved, etc.). This is also used as where the va_start
-  // will start for varargs functions.
+  // (i.e. needs to be saved, etc.).
   int num_regs_passed;
 
   // Indexed first by 0=int, 1=float, use KBASE(cls).
@@ -119,6 +119,14 @@ typedef struct RegisterUsage {
 
   bool rax_returned;
   bool xmm0_returned;
+
+  // This is also used as where the va_start will start for varargs functions
+  // (there's no 'Oparv', so we need to keep track of a count here.)
+  int num_named_args_passed;
+
+  // This is set when classifying the arguments for a call (but not when
+  // classifying the parameters of a function definition).
+  bool is_varargs_call;
 } RegisterUsage;
 
 static int register_usage_to_call_arg_value(RegisterUsage reg_usage) {
@@ -148,9 +156,12 @@ static void assign_register_or_stack(RegisterUsage* reg_usage,
     ++reg_usage->num_regs_passed;
     arg->style = by_copy ? APS_CopyAndPointerInRegister : APS_Register;
   }
+  ++reg_usage->num_named_args_passed;
 }
 
 static bool type_is_by_copy(Typ* type) {
+  // Note that only these sizes are passed by register, even though e.g. a
+  // 5 byte struct would "fit", it still is passed by copy-and-pointer.
   return type->isdark || (type->size != 1 && type->size != 2 &&
                           type->size != 4 && type->size != 8);
 }
@@ -178,12 +189,11 @@ static void classify_arguments(RegisterUsage* reg_usage,
         arg->align = 3;
         arg->size = 8;
         break;
+
       case Oargc:
       case Oparc: {
         int typ_index = instr->arg[0].val;
         Typ* type = &typ[typ_index];
-        // Note that only these sizes are passed by register, even though e.g. a
-        // 5 byte struct would "fit", it still is passed by copy-and-pointer.
         bool by_copy = type_is_by_copy(type);
         assign_register_or_stack(reg_usage, arg, /*is_float=*/false, by_copy);
         arg->cls = Kl;
@@ -196,9 +206,22 @@ static void classify_arguments(RegisterUsage* reg_usage,
       }
       case Oarge:
       case Opare:
-        die("not implemented");
+        die("env not implemented");
+
       case Oargv:
-        die("todo; varargs!");
+        reg_usage->is_varargs_call = true;
+        arg->style = APS_VarargsTag;
+        break;
+    }
+  }
+
+  // During a varargs call, float arguments have to be duplicated to their
+  // associated integer register, so mark them as in-use too.
+  if (reg_usage->is_varargs_call) {
+    for (int i = 0 ; i < 4; ++i) {
+      if (reg_usage->regs_passed[/*float*/1][i]) {
+        reg_usage->regs_passed[/*int*/ 0][i] = true;
+      }
     }
   }
 }
@@ -301,6 +324,21 @@ static Ins* lower_call(Fn* func,
 
   int reg_counter = 0;
 
+  if (reg_usage.is_varargs_call) {
+    // Any float arguments need to be duplicated to integer registers. This is
+    // required by the calling convention so that dumping to shadow space can be
+    // done without a prototype and for varargs.
+#define DUP_IF_USED(index, floatreg, intreg)         \
+  if (reg_usage.regs_passed[/*float*/ 1][index]) {   \
+    emit(Ocast, Kl, TMP(intreg), TMP(floatreg), R); \
+  }
+    DUP_IF_USED(0, XMM0, RCX);
+    DUP_IF_USED(1, XMM1, RDX);
+    DUP_IF_USED(2, XMM2, R8);
+    DUP_IF_USED(3, XMM2, R9);
+#undef DUP_IF_USED
+  }
+
   // TODO: pass hidden first arg here in rcx
 
   // This is where we actually do the load of values into registers or into
@@ -367,6 +405,9 @@ static Ins* lower_call(Fn* func,
         }
         break;
       }
+      case APS_VarargsTag:
+        // Nothing to do here, see right before the call for reg dupe.
+        break;
       case APS_Invalid:
         die("unreachable");
     }
@@ -444,7 +485,7 @@ static void lower_vastart(Fn* func,
   // *8 for sizeof(u64), +16 because the return address and rbp have been pushed
   // by the time we get to the body of the function.
   emit(Oadd, Kl, offset, TMP(RBP),
-       getcon(param_reg_usage->num_regs_passed * 8 + 16, func));
+       getcon(param_reg_usage->num_named_args_passed * 8 + 16, func));
 }
 
 static void lower_vaarg(Fn* func, Ins* vaarg_instr) {
@@ -579,6 +620,7 @@ static RegisterUsage lower_func_parameters(Fn* func) {
         emit(Ocopy, Kl, instr->to, from, R);
         break;
       }
+      case APS_VarargsTag:
       case APS_Invalid:
         die("unreachable");
     }
