@@ -108,7 +108,8 @@ bits amd64_winabi_argregs(Ref r, int p[2]) {
 typedef struct RegisterUsage {
   // Counter for both int/float as they're counted together. Only if the bool's
   // set in regs_passed is the given register *actually* needed for a value
-  // (i.e. needs to be saved, etc.)
+  // (i.e. needs to be saved, etc.). This is also used as where the va_start
+  // will start for varargs functions.
   int num_regs_passed;
 
   // Indexed first by 0=int, 1=float, use KBASE(cls).
@@ -424,11 +425,31 @@ static void lower_block_return(Fn* func, Blk* block) {
   block->jmp.arg = CALL(register_usage_to_call_arg_value(reg_usage));
 }
 
-static void lower_vastart(Fn* func, Ref valist) {
+static void lower_vastart(Fn* func,
+                          RegisterUsage* param_reg_usage,
+                          Ref valist) {
+  assert(func->vararg);
+  // In varargs functions:
+  // 1. the int registers are already dumped to the shadow stack space;
+  // 2. any parameters passed in floating point registers have
+  //    been duplicated to the integer registers
+  // 3. we ensure (later) that for varargs functions we're always using an rbp
+  //    frame pointer.
+  // So, the ... argument is just indexed past rbp by the number of named values
+  // that were actually passed.
+
+  Ref offset = newtmp("abi.vastart", Kl, func);
+  emit(Ostorel, Kl, R, offset, valist);
+
+  // *8 for sizeof(u64), +16 because the return address and rbp have been pushed
+  // by the time we get to the body of the function.
+  emit(Oadd, Kl, offset, TMP(RBP),
+       getcon(param_reg_usage->num_regs_passed * 8 + 16, func));
 }
 
 static void lower_args_for_block(Fn* func,
                                  Blk* block,
+                                 RegisterUsage* param_reg_usage,
                                  ExtraAlloc** pextra_alloc) {
   // global temporary buffer used by emit. Reset to the end, and predecremented
   // when adding to it.
@@ -445,7 +466,7 @@ static void lower_args_for_block(Fn* func,
           instr = lower_call(func, block, instr, pextra_alloc);
           break;
         case Ovastart:
-          lower_vastart(func, instr->arg[0]);
+          lower_vastart(func, param_reg_usage, instr->arg[0]);
           --instr;
           break;
         case Ovaarg:
@@ -487,7 +508,7 @@ static Ins* find_end_of_func_parameters(Blk* start_block) {
 }
 
 // Copy from registers/stack into values.
-static void lower_func_parameters(Fn* func) {
+static RegisterUsage lower_func_parameters(Fn* func) {
   // This is half-open, so end points after the last Opar.
   Blk* start_block = func->start;
   Ins* start_of_params = start_block->ins;
@@ -502,21 +523,6 @@ static void lower_func_parameters(Fn* func) {
   curi = &insb[NIns];
 
   RegisterUsage reg_usage = {0};
-
-  // If this is a vararg func, dump all passing-registers to shadow space so
-  // that they're available for va_start.
-  if (func->vararg) {
-    Ref hack = newtmp("wee", Kl,func);
-    emit(Ocopy, Kl, hack, TMP(RCX), R);
-    //emit(Ostorel, Kl, R, TMP(RDX), SLOT(4));
-    //emit(Ostorel, Kl, R, TMP(R8), SLOT(6));
-    //emit(Ostorel, Kl, R, TMP(R9), SLOT(8));
-    reg_usage.regs_passed[0][0] = true;
-    //reg_usage.regs_passed[0][1] = true;
-    //reg_usage.regs_passed[0][2] = true;
-    //reg_usage.regs_passed[0][3] = true;
-  }
-
   if (func->retty >= 0) {
     bool by_copy = type_is_by_copy(&typ[func->retty]);
     assign_register_or_stack(&reg_usage, &arg_ret, /*is_float=*/false, by_copy);
@@ -572,6 +578,8 @@ static void lower_func_parameters(Fn* func) {
   icpy(instr_p, end_of_params, num_other_after_instrs);
   start_block->nins = new_total_instrs;
   start_block->ins = new_instrs;
+
+  return reg_usage;
 }
 
 // The main job of this function is to lower generic instructions into the
@@ -592,12 +600,15 @@ static void lower_func_parameters(Fn* func) {
 //   level), then the pointer to that copy is treated as a regular integer
 //   argument (which then itself may *also* be copied to the stack in the case
 //   there's no integer register remaining.)
+// - when calling a varargs functions, floating point values must be duplicated
+//   integer registers. Along with the above restrictions, this makes varargs
+//   (and unprototyped functions) much simpler than SysV.
 void amd64_winabi_abi(Fn* func) {
   fprintf(stderr, "-------- BEFORE amd64_winabi_abi:\n");
   printfn(func, stderr);
 
   // The first thing to do is lower incoming parameters to this function.
-  lower_func_parameters(func);
+  RegisterUsage param_reg_usage = lower_func_parameters(func);
 
   // This is the second larger part of the job. We walk all blocks, and rewrite
   // instructions returns, calls, and handling of varargs into their win x64
@@ -610,9 +621,9 @@ void amd64_winabi_abi(Fn* func) {
   // value.
   ExtraAlloc* extra_alloc = NULL;
   for (Blk* block = func->start->link; block; block = block->link) {
-    lower_args_for_block(func, block, &extra_alloc);
+    lower_args_for_block(func, block, &param_reg_usage, &extra_alloc);
   }
-  lower_args_for_block(func, func->start, &extra_alloc);
+  lower_args_for_block(func, func->start, &param_reg_usage, &extra_alloc);
 
   fprintf(stderr, "-------- AFTER amd64_winabi_abis:\n");
   printfn(func, stderr);
