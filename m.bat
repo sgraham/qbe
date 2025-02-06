@@ -19,7 +19,7 @@ call python tools/test.py test/abi2.ssa
 call python tools/test.py test/abi3.ssa
 call python tools/test.py test/abi4.ssa
 ::call python tools/test.py test/abi5.ssa
-::call python tools/test.py test/abi6.ssa
+call python tools/test.py test/abi6.ssa
 call python tools/test.py test/abi7.ssa
 ::call python tools/test.py test/abi8.ssa
 call python tools/test.py test/alias1.ssa
@@ -32,7 +32,7 @@ call python tools/test.py test/cup.ssa
 ::call python tools/test.py test/dark.ssa
 call python tools/test.py test/double.ssa
 call python tools/test.py test/dynalloc.ssa
-::call python tools/test.py test/echo.ssa
+call python tools/test.py test/echo.ssa
 ::call python tools/test.py test/env.ssa
 call python tools/test.py test/eucl.ssa
 call python tools/test.py test/euclc.ssa
@@ -43,7 +43,7 @@ call python tools/test.py test/isel1.ssa
 call python tools/test.py test/isel2.ssa
 call python tools/test.py test/isel3.ssa
 call python tools/test.py test/isel4.ssa
-::call python tools/test.py test/isel5.ssa
+call python tools/test.py test/isel5.ssa
 call python tools/test.py test/ldbits.ssa
 call python tools/test.py test/ldhoist.ssa
 call python tools/test.py test/load1.ssa
