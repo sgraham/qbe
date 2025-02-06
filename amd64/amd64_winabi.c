@@ -149,16 +149,19 @@ static void assign_register_or_stack(RegisterUsage* reg_usage,
   }
 }
 
+static bool type_is_by_copy(Typ* type) {
+  return type->isdark || (type->size != 1 && type->size != 2 &&
+                          type->size != 4 && type->size != 8);
+}
+
 // This function is used for both arguments and parameters.
 // begin_instr should either point at the first Oarg or Opar, and end_instr
 // should point past the last one (so to the Ocall for arguments, or to the
 // first 'real' instruction of the function for parameters).
-static RegisterUsage classify_arguments(Ins* begin_instr,
-                                        Ins* end_instr,
-                                        ArgClass* arg_classes,
-                                        ArgClass* return_class) {
-  RegisterUsage reg_usage = {0};
-  assert(!return_class && "todo");
+static void classify_arguments(RegisterUsage* reg_usage,
+                               Ins* begin_instr,
+                               Ins* end_instr,
+                               ArgClass* arg_classes) {
 
   ArgClass* arg = arg_classes;
   // For each argument, determine how it will be passed (int, float, stack)
@@ -168,7 +171,7 @@ static RegisterUsage classify_arguments(Ins* begin_instr,
     switch (instr->op) {
       case Oarg:
       case Opar:
-        assign_register_or_stack(&reg_usage, arg, KBASE(instr->cls),
+        assign_register_or_stack(reg_usage, arg, KBASE(instr->cls),
                                  /*by_copy=*/false);
         arg->cls = instr->cls;
         arg->align = 3;
@@ -180,9 +183,8 @@ static RegisterUsage classify_arguments(Ins* begin_instr,
         Typ* type = &typ[typ_index];
         // Note that only these sizes are passed by register, even though e.g. a
         // 5 byte struct would "fit", it still is passed by copy-and-pointer.
-        bool by_copy = (type->isdark || (type->size != 1 && type->size != 2 &&
-                                         type->size != 4 && type->size != 8));
-        assign_register_or_stack(&reg_usage, arg, /*is_float=*/false, by_copy);
+        bool by_copy = type_is_by_copy(type);
+        assign_register_or_stack(reg_usage, arg, /*is_float=*/false, by_copy);
         arg->cls = Kl;
         if (!by_copy && type->size <= 4) {
           arg->cls = Kw;
@@ -198,8 +200,6 @@ static RegisterUsage classify_arguments(Ins* begin_instr,
         die("todo; varargs!");
     }
   }
-
-  return reg_usage;
 }
 
 static bool is_integer_type(int ty) {
@@ -242,12 +242,11 @@ static Ins* lower_call(Fn* func,
   // the function returns a non-basic type, then arg[1] is a reference to the
   // type of the return.
   // TODO: doesn't do anything with `env`, I don't understand that feature yet.
-  RegisterUsage reg_usage;
+  RegisterUsage reg_usage = {0};
   if (req(call_instr->arg[1], R)) {  // req checks if Refs are equal; `R` is 0.
-    reg_usage =
-        classify_arguments(earliest_arg_instr, call_instr, arg_classes, NULL);
+    classify_arguments(&reg_usage, earliest_arg_instr, call_instr, arg_classes);
   } else {
-    abort();
+    die("todo; ret");
   }
 
   // We now know which arguments are on the stack and which are in registers, so
@@ -402,7 +401,16 @@ static void lower_block_return(Fn* func, Blk* block) {
   RegisterUsage reg_usage = {0};
 
   if (jmp_type == Jretc) {
-    die("todo; struct return");
+    Typ* type = &typ[func->retty];
+    if (type_is_by_copy(type)) {
+      assert(rtype(func->retr) == RTmp);
+      emit(Ocopy, Kl, TMP(RAX), func->retr, R);
+      emit(Oblit1, 0, R, INT(type->size), R);
+      emit(Oblit0, 0, R, ret_arg, func->retr);
+    } else {
+      emit(Oload, Kl, TMP(RAX), ret_arg, R);
+    }
+    reg_usage.rax_returned = true;
   } else {
     int k = jmp_type - Jretw;
     if (is_integer_type(k)) {
@@ -485,21 +493,28 @@ static void lower_func_parameters(Fn* func) {
 
   size_t num_params = end_of_params - start_of_params;
   ArgClass* arg_classes = alloc(num_params * sizeof(ArgClass));
+  ArgClass arg_ret = {0};
 
   // global temporary buffer used by emit. Reset to the end, and predecremented
   // when adding to it.
   curi = &insb[NIns];
 
-  RegisterUsage reg_usage;
+  RegisterUsage reg_usage = {0};
   if (func->retty >= 0) {
-    die("todo; this param is hidden struct ret val ptr");
-  } else {
-    reg_usage =
-        classify_arguments(start_of_params, end_of_params, arg_classes, NULL);
+    bool by_copy = type_is_by_copy(&typ[func->retty]);
+    assign_register_or_stack(&reg_usage, &arg_ret, /*is_float=*/false, by_copy);
+    if (by_copy) {
+      Ref ret_ref = newtmp("abi.ret", Kl, func);
+      emit(Ocopy, Kl, ret_ref, TMP(RCX), R);
+      func->retr = ret_ref;
+    }
   }
+  classify_arguments(&reg_usage, start_of_params, end_of_params, arg_classes);
   func->reg = amd64_winabi_argregs(
       CALL(register_usage_to_call_arg_value(reg_usage)), NULL);
 
+  // Copy from the registers or stack slots into the named parameters. Depending
+  // on how they're passed, they either need to be copied or loaded.
   ArgClass* arg = arg_classes;
   int reg_counter = 0;
   uint slot_offset = SHADOW_SPACE_SIZE / 4 + 4;
