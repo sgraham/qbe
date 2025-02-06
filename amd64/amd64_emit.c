@@ -732,7 +732,7 @@ amd64_winabi_emitfn(Fn *fn, FILE *f)
 	static int id0;
 	Blk *b, *s;
 	Ins *i, itmp;
-	int *r, c, o, n, lbl;
+	int *r, c, lbl;
 	E *e;
 
 	e = &(E){.f = f, .fn = fn};
