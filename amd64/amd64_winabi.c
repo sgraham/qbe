@@ -43,8 +43,8 @@ MAKESURE(winabi_arrays_ok,
 // layout of call's second argument (RCall)
 //
 // bit 0: rax returned
-// bit 1: xmm0 returns
-// bits 2,3: 0
+// bit 1: xmm0 returned
+// bits 23: 0
 // bits 4567: rcx, rdx, r8, r9 passed
 // bits 89ab: xmm0,1,2,3 passed
 // bits c..1f: 0
@@ -330,11 +330,11 @@ static Ins* lower_call(Fn* func,
           // slot. (And, remember that these are emitted backwards, so store,
           // then load.)
           Ref smalltmp = newtmp("abi.smalltmp", arg->cls, func);
-          emit(Ostorel, 0, R, smalltmp, slot);
+          emit(Ostorel, Kl, R, smalltmp, slot);
           emit(Oload, arg->cls, smalltmp, instr->arg[1], R);
         } else {
           // Stash the value into the stack slot.
-          emit(Ostorel, 0, R, instr->arg[0], slot);
+          emit(Ostorel, Kl, R, instr->arg[0], slot);
         }
         emit(Oadd, Kl, slot, arg_stack_slots, getcon(slot_offset, func));
         slot_offset += arg->size;
@@ -360,7 +360,7 @@ static Ins* lower_call(Fn* func,
         } else {
           assert(arg->style == APS_CopyAndPointerOnStack);
           Ref slot = newtmp("abi.off", Kl, func);
-          emit(Ostorel, 0, R, copy_ref, slot);
+          emit(Ostorel, Kl, R, copy_ref, slot);
           emit(Oadd, Kl, slot, arg_stack_slots, getcon(slot_offset, func));
           slot_offset += 8;
         }
@@ -424,13 +424,12 @@ static void lower_block_return(Fn* func, Blk* block) {
   block->jmp.arg = CALL(register_usage_to_call_arg_value(reg_usage));
 }
 
+static void lower_vastart(Fn* func, Ref valist) {
+}
+
 static void lower_args_for_block(Fn* func,
                                  Blk* block,
                                  ExtraAlloc** pextra_alloc) {
-  if (block->visit) {
-    return;
-  }
-
   // global temporary buffer used by emit. Reset to the end, and predecremented
   // when adding to it.
   curi = &insb[NIns];
@@ -446,8 +445,11 @@ static void lower_args_for_block(Fn* func,
           instr = lower_call(func, block, instr, pextra_alloc);
           break;
         case Ovastart:
+          lower_vastart(func, instr->arg[0]);
+          --instr;
+          break;
         case Ovaarg:
-          die("todo!");
+          die("todo; vaarg");
         case Oarg:
         case Oargc:
           die("unreachable");
@@ -500,6 +502,21 @@ static void lower_func_parameters(Fn* func) {
   curi = &insb[NIns];
 
   RegisterUsage reg_usage = {0};
+
+  // If this is a vararg func, dump all passing-registers to shadow space so
+  // that they're available for va_start.
+  if (func->vararg) {
+    Ref hack = newtmp("wee", Kl,func);
+    emit(Ocopy, Kl, hack, TMP(RCX), R);
+    //emit(Ostorel, Kl, R, TMP(RDX), SLOT(4));
+    //emit(Ostorel, Kl, R, TMP(R8), SLOT(6));
+    //emit(Ostorel, Kl, R, TMP(R9), SLOT(8));
+    reg_usage.regs_passed[0][0] = true;
+    //reg_usage.regs_passed[0][1] = true;
+    //reg_usage.regs_passed[0][2] = true;
+    //reg_usage.regs_passed[0][3] = true;
+  }
+
   if (func->retty >= 0) {
     bool by_copy = type_is_by_copy(&typ[func->retty]);
     assign_register_or_stack(&reg_usage, &arg_ret, /*is_float=*/false, by_copy);
@@ -525,7 +542,6 @@ static void lower_func_parameters(Fn* func) {
         emit(Ocopy, instr->cls, instr->to, from, R);
         break;
       }
-
       case APS_InlineOnStack:
         emit(Ocopy, Kl, instr->to, SLOT(-slot_offset), R);
         slot_offset += 2;
@@ -543,7 +559,6 @@ static void lower_func_parameters(Fn* func) {
         emit(Ocopy, Kl, instr->to, from, R);
         break;
       }
-
       case APS_Invalid:
         die("unreachable");
     }
@@ -580,13 +595,6 @@ static void lower_func_parameters(Fn* func) {
 void amd64_winabi_abi(Fn* func) {
   fprintf(stderr, "-------- BEFORE amd64_winabi_abi:\n");
   printfn(func, stderr);
-
-  // Reset |visit| flags for each block of the function. These are a
-  // flag/counter to know when a processing step has already done something to
-  // the block.
-  for (Blk* block = func->start; block; block = block->link) {
-    block->visit = 0;
-  }
 
   // The first thing to do is lower incoming parameters to this function.
   lower_func_parameters(func);

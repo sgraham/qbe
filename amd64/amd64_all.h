@@ -78,4 +78,5 @@ void amd64_winabi_abi(Fn *);
 void amd64_isel(Fn *);
 
 /* emit.c */
-void amd64_emitfn(Fn *, FILE *);
+void amd64_sysv_emitfn(Fn *, FILE *);
+void amd64_winabi_emitfn(Fn *, FILE *);

@@ -22,7 +22,6 @@ amd64_memargs(int op)
 	.memargs = amd64_memargs, \
 	.abi0 = elimsb, \
 	.isel = amd64_isel, \
-	.emitfn = amd64_emitfn, \
 
 Target T_amd64_sysv = {
 	.name = "amd64_sysv",
@@ -33,6 +32,7 @@ Target T_amd64_sysv = {
 	.nrsave = {NGPS_SYSV, NFPS},
 	.retregs = amd64_sysv_retregs,
 	.argregs = amd64_sysv_argregs,
+	.emitfn = amd64_sysv_emitfn,
 	AMD64_COMMON
 };
 
@@ -47,6 +47,7 @@ Target T_amd64_apple = {
 	.nrsave = {NGPS_SYSV, NFPS},
 	.retregs = amd64_sysv_retregs,
 	.argregs = amd64_sysv_argregs,
+	.emitfn = amd64_sysv_emitfn,
 	AMD64_COMMON
 };
 
@@ -60,5 +61,6 @@ Target T_amd64_win = {
 	.nrsave = {NGPS_WIN, NFPS},
 	.retregs = amd64_winabi_retregs,
 	.argregs = amd64_winabi_argregs,
+	.emitfn = amd64_winabi_emitfn,
 	AMD64_COMMON
 };
