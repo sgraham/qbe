@@ -604,8 +604,8 @@ static RegisterUsage lower_func_parameters(Fn* func) {
 //   integer registers. Along with the above restrictions, this makes varargs
 //   (and unprototyped functions) much simpler than SysV.
 void amd64_winabi_abi(Fn* func) {
-  fprintf(stderr, "-------- BEFORE amd64_winabi_abi:\n");
-  printfn(func, stderr);
+  //fprintf(stderr, "-------- BEFORE amd64_winabi_abi:\n");
+  //printfn(func, stderr);
 
   // The first thing to do is lower incoming parameters to this function.
   RegisterUsage param_reg_usage = lower_func_parameters(func);
@@ -625,8 +625,8 @@ void amd64_winabi_abi(Fn* func) {
   }
   lower_args_for_block(func, func->start, &param_reg_usage, &extra_alloc);
 
-  fprintf(stderr, "-------- AFTER amd64_winabi_abis:\n");
-  printfn(func, stderr);
+  //fprintf(stderr, "-------- AFTER amd64_winabi_abis:\n");
+  //printfn(func, stderr);
 
   if (debug['A']) {
     fprintf(stderr, "\n> After ABI lowering:\n");
