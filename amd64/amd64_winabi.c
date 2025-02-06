@@ -398,6 +398,22 @@ static void lower_block_return(Fn* func, Blk* block) {
   // lowered it's handled by the the register/stack manipulation.
   Ref ret_arg = block->jmp.arg;
   block->jmp.type = Jret0;
+
+  RegisterUsage reg_usage = {0};
+
+  if (jmp_type == Jretc) {
+    die("todo; struct return");
+  } else {
+    int k = jmp_type - Jretw;
+    if (is_integer_type(k)) {
+      emit(Ocopy, k, TMP(RAX), ret_arg, R);
+      reg_usage.rax_returned = true;
+    } else {
+      emit(Ocopy, k, TMP(XMM0), ret_arg, R);
+      reg_usage.xmm0_returned = true;
+    }
+  }
+  block->jmp.arg = CALL(register_usage_to_call_arg_value(reg_usage));
 }
 
 static void lower_args_for_block(Fn* func,
@@ -487,9 +503,6 @@ static void lower_func_parameters(Fn* func) {
   ArgClass* arg = arg_classes;
   int reg_counter = 0;
   for (Ins* instr = start_of_params; instr < end_of_params; ++instr, ++arg) {
-    if (instr->op == Oparc) {
-      die("todo; struct par");
-    }
     switch (arg->style) {
       case APS_Register: {
         Ref from = register_for_arg(arg->cls, reg_counter++);
@@ -501,9 +514,16 @@ static void lower_func_parameters(Fn* func) {
         die("todo; from stack");
         break;
 
-      case APS_CopyAndPointerOnStack:
-      case APS_CopyAndPointerInRegister:
-        die("struct by val with pointer");
+      case APS_CopyAndPointerOnStack: {
+        die("struct with pointer on stack");
+      }
+      case APS_CopyAndPointerInRegister: {
+        // Because this has to be a copy (that we own), it is sufficient to just
+        // copy the register to the target.
+        Ref from = register_for_arg(Kl, reg_counter++);
+        emit(Ocopy, Kl, instr->to, from, R);
+        break;
+      }
 
       case APS_Invalid:
         die("unreachable");
