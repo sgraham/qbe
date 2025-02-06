@@ -502,6 +502,7 @@ static void lower_func_parameters(Fn* func) {
 
   ArgClass* arg = arg_classes;
   int reg_counter = 0;
+  uint slot_offset = SHADOW_SPACE_SIZE / 4 + 4;
   for (Ins* instr = start_of_params; instr < end_of_params; ++instr, ++arg) {
     switch (arg->style) {
       case APS_Register: {
@@ -511,12 +512,15 @@ static void lower_func_parameters(Fn* func) {
       }
 
       case APS_InlineOnStack:
-        die("todo; from stack");
+        emit(Ocopy, Kl, instr->to, SLOT(-slot_offset), R);
+        slot_offset += 2;
         break;
 
-      case APS_CopyAndPointerOnStack: {
-        die("struct with pointer on stack");
-      }
+      case APS_CopyAndPointerOnStack:
+        emit(Oload, Kl, instr->to, SLOT(-slot_offset), R);
+        slot_offset += arg->size / 4;
+        break;
+
       case APS_CopyAndPointerInRegister: {
         // Because this has to be a copy (that we own), it is sufficient to just
         // copy the register to the target.

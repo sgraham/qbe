@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import glob
 import os
 import subprocess
@@ -46,7 +48,7 @@ def test(fn, plat):
 
     subprocess.run(["clang", "-g", "-o", "tmp.exe"] + to_build, check=True)
     proc = subprocess.run(
-        ["./tmp.exe", "a", "b", "c"], capture_output=True, universal_newlines=True
+        ["./tmp.exe", "a", "b", "c"], capture_output=True, universal_newlines=True, check=True
     )
     if output:
         out = proc.stdout
