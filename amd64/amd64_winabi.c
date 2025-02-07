@@ -9,6 +9,7 @@ typedef enum ArgPassStyle {
   APS_CopyAndPointerInRegister,
   APS_CopyAndPointerOnStack,
   APS_VarargsTag,
+  APS_EnvTag,
 } ArgPassStyle;
 
 typedef struct ArgClass {
@@ -48,7 +49,8 @@ MAKESURE(winabi_arrays_ok,
 // bits 23: 0
 // bits 4567: rcx, rdx, r8, r9 passed
 // bits 89ab: xmm0,1,2,3 passed
-// bits c..1f: 0
+// bit c: env call (rax passed)
+// bits d..1f: 0
 
 bits amd64_winabi_retregs(Ref r, int p[2]) {
   assert(rtype(r) == RCall);
@@ -85,6 +87,7 @@ bits amd64_winabi_argregs(Ref r, int p[2]) {
   // to know which ones are in use because they're not necessarily contiguous.
   int int_passed = (r.val >> 4) & 15;
   int float_passed = (r.val >> 8) & 15;
+  bool env_param = (r.val >> 12) & 1;
 
   bits b = 0;
   b |= (int_passed & 1) ? BIT(RCX) : 0;
@@ -95,6 +98,7 @@ bits amd64_winabi_argregs(Ref r, int p[2]) {
   b |= (float_passed & 2) ? BIT(XMM1) : 0;
   b |= (float_passed & 4) ? BIT(XMM2) : 0;
   b |= (float_passed & 8) ? BIT(XMM3) : 0;
+  b |= env_param ? BIT(RAX) : 0;
   if (p) {
     // TODO: The only place this is used is live.c. I'm not sure what should be
     // returned here wrt to using the same counter for int/float regs on win.
@@ -127,19 +131,22 @@ typedef struct RegisterUsage {
   // This is set when classifying the arguments for a call (but not when
   // classifying the parameters of a function definition).
   bool is_varargs_call;
+
+  bool has_env;
 } RegisterUsage;
 
 static int register_usage_to_call_arg_value(RegisterUsage reg_usage) {
-  return (reg_usage.rax_returned << 0) |  //
-         (reg_usage.xmm0_returned << 1) |  //
-         (reg_usage.regs_passed[0][0] << 4) |          //
-         (reg_usage.regs_passed[0][1] << 5) |          //
-         (reg_usage.regs_passed[0][2] << 6) |          //
-         (reg_usage.regs_passed[0][3] << 7) |          //
-         (reg_usage.regs_passed[1][0] << 8) |          //
-         (reg_usage.regs_passed[1][1] << 9) |          //
-         (reg_usage.regs_passed[1][2] << 10) |         //
-         (reg_usage.regs_passed[1][3] << 11);
+  return (reg_usage.rax_returned << 0) |        //
+         (reg_usage.xmm0_returned << 1) |       //
+         (reg_usage.regs_passed[0][0] << 4) |   //
+         (reg_usage.regs_passed[0][1] << 5) |   //
+         (reg_usage.regs_passed[0][2] << 6) |   //
+         (reg_usage.regs_passed[0][3] << 7) |   //
+         (reg_usage.regs_passed[1][0] << 8) |   //
+         (reg_usage.regs_passed[1][1] << 9) |   //
+         (reg_usage.regs_passed[1][2] << 10) |  //
+         (reg_usage.regs_passed[1][3] << 11) |  //
+         (reg_usage.has_env << 12);
 }
 
 // Assigns the argument to a register if there's any left according to the
@@ -173,8 +180,8 @@ static bool type_is_by_copy(Typ* type) {
 static void classify_arguments(RegisterUsage* reg_usage,
                                Ins* begin_instr,
                                Ins* end_instr,
-                               ArgClass* arg_classes) {
-
+                               ArgClass* arg_classes,
+                               Ref* env) {
   ArgClass* arg = arg_classes;
   // For each argument, determine how it will be passed (int, float, stack)
   // and update the `reg_usage` counts. Additionally, fill out arg_classes for
@@ -189,7 +196,6 @@ static void classify_arguments(RegisterUsage* reg_usage,
         arg->align = 3;
         arg->size = 8;
         break;
-
       case Oargc:
       case Oparc: {
         int typ_index = instr->arg[0].val;
@@ -205,9 +211,15 @@ static void classify_arguments(RegisterUsage* reg_usage,
         break;
       }
       case Oarge:
+        *env = instr->arg[0];
+        arg->style = APS_EnvTag;
+        reg_usage->has_env = true;
+        break;
       case Opare:
-        die("todo; env not implemented");
-
+        *env = instr->to;
+        arg->style = APS_EnvTag;
+        reg_usage->has_env = true;
+        break;
       case Oargv:
         reg_usage->is_varargs_call = true;
         arg->style = APS_VarargsTag;
@@ -215,11 +227,15 @@ static void classify_arguments(RegisterUsage* reg_usage,
     }
   }
 
+  if (reg_usage->has_env && reg_usage->is_varargs_call) {
+    die("can't use env with varargs");
+  }
+
   // During a varargs call, float arguments have to be duplicated to their
   // associated integer register, so mark them as in-use too.
   if (reg_usage->is_varargs_call) {
-    for (int i = 0 ; i < 4; ++i) {
-      if (reg_usage->regs_passed[/*float*/1][i]) {
+    for (int i = 0; i < 4; ++i) {
+      if (reg_usage->regs_passed[/*float*/ 1][i]) {
         reg_usage->regs_passed[/*int*/ 0][i] = true;
       }
     }
@@ -260,8 +276,6 @@ static Ins* lower_call(Fn* func,
   uint num_args = call_instr - earliest_arg_instr;
   ArgClass* arg_classes = alloc(num_args * sizeof(ArgClass));
 
-  // TODO: `env` not handled yet.
-
   RegisterUsage reg_usage = {0};
   ArgClass ret_arg_class = {0};
 
@@ -279,7 +293,9 @@ static Ins* lower_call(Fn* func,
     }
     ret_arg_class.size = ret_type->size;
   }
-  classify_arguments(&reg_usage, earliest_arg_instr, call_instr, arg_classes);
+  Ref env = R;
+  classify_arguments(&reg_usage, earliest_arg_instr, call_instr, arg_classes,
+                     &env);
 
   // We now know which arguments are on the stack and which are in registers, so
   // we can allocate the correct amount of space to stash the stack-located ones
@@ -325,7 +341,8 @@ static Ins* lower_call(Fn* func,
       // pointer, we need to store the return value into an alloca because
       // subsequent IL will still be treating the function return as a pointer.
       ExtraAlloc* return_copy = alloc(sizeof(ExtraAlloc));
-      return_copy->instr = (Ins){Oalloc8, Kl, call_instr->to, {getcon(8, func)}};
+      return_copy->instr =
+          (Ins){Oalloc8, Kl, call_instr->to, {getcon(8, func)}};
       return_copy->link = (*pextra_alloc);
       *pextra_alloc = return_copy;
       Ref copy = newtmp("abi.copy", Kl, func);
@@ -350,12 +367,17 @@ static Ins* lower_call(Fn* func,
   emit(Ocall, call_instr->cls, R, call_instr->arg[0],
        CALL(register_usage_to_call_arg_value(reg_usage)));
 
+  if (!req(R, env)) {
+    // If there's an env arg to be passed, it gets stashed in RAX.
+    emit(Ocopy, Kl, TMP(RAX), env, R);
+  }
+
   if (reg_usage.is_varargs_call) {
     // Any float arguments need to be duplicated to integer registers. This is
     // required by the calling convention so that dumping to shadow space can be
     // done without a prototype and for varargs.
-#define DUP_IF_USED(index, floatreg, intreg)         \
-  if (reg_usage.regs_passed[/*float*/ 1][index]) {   \
+#define DUP_IF_USED(index, floatreg, intreg)        \
+  if (reg_usage.regs_passed[/*float*/ 1][index]) {  \
     emit(Ocast, Kl, TMP(intreg), TMP(floatreg), R); \
   }
     DUP_IF_USED(0, XMM0, RCX);
@@ -435,6 +457,7 @@ static Ins* lower_call(Fn* func,
         }
         break;
       }
+      case APS_EnvTag:
       case APS_VarargsTag:
         // Nothing to do here, see right before the call for reg dupe.
         break;
@@ -610,14 +633,17 @@ static RegisterUsage lower_func_parameters(Fn* func) {
   RegisterUsage reg_usage = {0};
   if (func->retty >= 0) {
     bool by_copy = type_is_by_copy(&typ[func->retty]);
-    assign_register_or_stack(&reg_usage, &arg_ret, /*is_float=*/false, by_copy);
     if (by_copy) {
+      assign_register_or_stack(&reg_usage, &arg_ret, /*is_float=*/false,
+                               by_copy);
       Ref ret_ref = newtmp("abi.ret", Kl, func);
       emit(Ocopy, Kl, ret_ref, TMP(RCX), R);
       func->retr = ret_ref;
     }
   }
-  classify_arguments(&reg_usage, start_of_params, end_of_params, arg_classes);
+  Ref env = R;
+  classify_arguments(&reg_usage, start_of_params, end_of_params, arg_classes,
+                     &env);
   func->reg = amd64_winabi_argregs(
       CALL(register_usage_to_call_arg_value(reg_usage)), NULL);
 
@@ -653,12 +679,10 @@ static RegisterUsage lower_func_parameters(Fn* func) {
         }
         slot_offset += 2;
         break;
-
       case APS_CopyAndPointerOnStack:
         emit(Oload, Kl, instr->to, SLOT(-slot_offset), R);
         slot_offset += 2;
         break;
-
       case APS_CopyAndPointerInRegister: {
         // Because this has to be a copy (that we own), it is sufficient to just
         // copy the register to the target.
@@ -666,10 +690,17 @@ static RegisterUsage lower_func_parameters(Fn* func) {
         emit(Ocopy, Kl, instr->to, from, R);
         break;
       }
+      case APS_EnvTag:
+        break;
       case APS_VarargsTag:
       case APS_Invalid:
         die("unreachable");
     }
+  }
+
+  // If there was an `env`, it was passed in RAX, so copy it into the env ref.
+  if (!req(R, env)) {
+    emit(Ocopy, Kl, env, TMP(RAX), R);
   }
 
   int num_created_instrs = &insb[NIns] - curi;
@@ -706,8 +737,8 @@ static RegisterUsage lower_func_parameters(Fn* func) {
 //   integer registers. Along with the above restrictions, this makes varargs
 //   handling simpler for the callee than SysV.
 void amd64_winabi_abi(Fn* func) {
-  //fprintf(stderr, "-------- BEFORE amd64_winabi_abi:\n");
-  //printfn(func, stderr);
+  // fprintf(stderr, "-------- BEFORE amd64_winabi_abi:\n");
+  // printfn(func, stderr);
 
   // The first thing to do is lower incoming parameters to this function.
   RegisterUsage param_reg_usage = lower_func_parameters(func);
@@ -727,8 +758,8 @@ void amd64_winabi_abi(Fn* func) {
   }
   lower_args_for_block(func, func->start, &param_reg_usage, &extra_alloc);
 
-  //fprintf(stderr, "-------- AFTER amd64_winabi_abi:\n");
-  //printfn(func, stderr);
+  // fprintf(stderr, "-------- AFTER amd64_winabi_abi:\n");
+  // printfn(func, stderr);
 
   if (debug['A']) {
     fprintf(stderr, "\n> After ABI lowering:\n");
