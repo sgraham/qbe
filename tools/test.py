@@ -49,7 +49,7 @@ def test(fn):
         print("skip")
         return
 
-    subprocess.run(["./sqbe.exe", "-t", target, "-o", "tmp.s", fn], check=True)
+    subprocess.run(["./qbe.exe", "-t", target, "-o", "tmp.s", fn], check=True)
     to_build = ["tmp.s"]
     if driver:
         with open("driver.c", "w", newline="\n") as f:

@@ -704,7 +704,7 @@ static RegisterUsage lower_func_parameters(Fn* func) {
   }
 
   int num_created_instrs = &insb[NIns] - curi;
-  int num_other_after_instrs = start_block->nins - num_params;
+  int num_other_after_instrs = (int)(start_block->nins - num_params);
   int new_total_instrs = num_other_after_instrs + num_created_instrs;
   Ins* new_instrs = alloc(new_total_instrs * sizeof(Ins));
   Ins* instr_p = icpy(new_instrs, curi, num_created_instrs);
@@ -737,9 +737,6 @@ static RegisterUsage lower_func_parameters(Fn* func) {
 //   integer registers. Along with the above restrictions, this makes varargs
 //   handling simpler for the callee than SysV.
 void amd64_winabi_abi(Fn* func) {
-  // fprintf(stderr, "-------- BEFORE amd64_winabi_abi:\n");
-  // printfn(func, stderr);
-
   // The first thing to do is lower incoming parameters to this function.
   RegisterUsage param_reg_usage = lower_func_parameters(func);
 
@@ -757,9 +754,6 @@ void amd64_winabi_abi(Fn* func) {
     lower_args_for_block(func, block, &param_reg_usage, &extra_alloc);
   }
   lower_args_for_block(func, func->start, &param_reg_usage, &extra_alloc);
-
-  // fprintf(stderr, "-------- AFTER amd64_winabi_abi:\n");
-  // printfn(func, stderr);
 
   if (debug['A']) {
     fprintf(stderr, "\n> After ABI lowering:\n");

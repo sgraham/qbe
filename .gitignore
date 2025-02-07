@@ -2,9 +2,8 @@
 *.obj
 *.pdb
 *.ilk
-sqbe
 qbe
-sqbe.exe
+qbe.exe
 config.h
 .comfile
 *.out
