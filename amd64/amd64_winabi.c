@@ -656,7 +656,7 @@ static RegisterUsage lower_func_parameters(Fn* func) {
 
       case APS_CopyAndPointerOnStack:
         emit(Oload, Kl, instr->to, SLOT(-slot_offset), R);
-        slot_offset += arg->size / 4;
+        slot_offset += 2;
         break;
 
       case APS_CopyAndPointerInRegister: {

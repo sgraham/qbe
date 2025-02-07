@@ -8,7 +8,7 @@ call "cl.exe" ^
     rv64/rv64_abi.c rv64/rv64_emit.c rv64/rv64_isel.c rv64/rv64_targ.c ^
     /link /out:sqbe.exe || exit /b
 
-::set FN=test/abi5.ssa
+::set FN=test/abi8.ssa
 ::call python tools/test.py %FN%
 ::sqbe -dPMNCFAILSR -t amd64_win %FN% 2> dump.txt
 
@@ -21,7 +21,7 @@ call python tools/test.py test/abi4.ssa
 call python tools/test.py test/abi5.ssa
 call python tools/test.py test/abi6.ssa
 call python tools/test.py test/abi7.ssa
-::call python tools/test.py test/abi8.ssa
+call python tools/test.py test/abi8.ssa
 call python tools/test.py test/alias1.ssa
 call python tools/test.py test/align.ssa
 call python tools/test.py test/cmp1.ssa
