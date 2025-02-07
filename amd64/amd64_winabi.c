@@ -630,11 +630,27 @@ static RegisterUsage lower_func_parameters(Fn* func) {
     switch (arg->style) {
       case APS_Register: {
         Ref from = register_for_arg(arg->cls, reg_counter++);
-        emit(Ocopy, instr->cls, instr->to, from, R);
+        // If it's a struct at the IL level, we need to copy the register into
+        // an alloca so we have something to point at (same for InlineOnStack).
+        if (instr->op == Oparc) {
+          arg->ref = newtmp("abi", Kl, func);
+          emit(Ostorel, Kl, R, arg->ref, instr->to);
+          emit(Ocopy, instr->cls, arg->ref, from, R);
+          emit(Oalloc8, Kl, instr->to, getcon(arg->size, func), R);
+        } else {
+          emit(Ocopy, instr->cls, instr->to, from, R);
+        }
         break;
       }
       case APS_InlineOnStack:
-        emit(Ocopy, Kl, instr->to, SLOT(-slot_offset), R);
+        if (instr->op == Oparc) {
+          arg->ref = newtmp("abi", Kl, func);
+          emit(Ostorel, Kl, R, arg->ref, instr->to);
+          emit(Ocopy, instr->cls, arg->ref, SLOT(-slot_offset), R);
+          emit(Oalloc8, Kl, instr->to, getcon(arg->size, func), R);
+        } else {
+          emit(Ocopy, Kl, instr->to, SLOT(-slot_offset), R);
+        }
         slot_offset += 2;
         break;
 
@@ -688,7 +704,7 @@ static RegisterUsage lower_func_parameters(Fn* func) {
 //   there's no integer register remaining.)
 // - when calling a varargs functions, floating point values must be duplicated
 //   integer registers. Along with the above restrictions, this makes varargs
-//   (and unprototyped functions) much simpler than SysV.
+//   handling simpler for the callee than SysV.
 void amd64_winabi_abi(Fn* func) {
   //fprintf(stderr, "-------- BEFORE amd64_winabi_abi:\n");
   //printfn(func, stderr);
