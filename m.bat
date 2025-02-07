@@ -8,7 +8,7 @@ call "cl.exe" ^
     rv64/rv64_abi.c rv64/rv64_emit.c rv64/rv64_isel.c rv64/rv64_targ.c ^
     /link /out:sqbe.exe || exit /b
 
-::set FN=test/vararg2.ssa
+::set FN=test/abi5.ssa
 ::call python tools/test.py %FN%
 ::sqbe -dPMNCFAILSR -t amd64_win %FN% 2> dump.txt
 
@@ -18,7 +18,7 @@ call python tools/test.py test/abi1.ssa
 call python tools/test.py test/abi2.ssa
 call python tools/test.py test/abi3.ssa
 call python tools/test.py test/abi4.ssa
-::call python tools/test.py test/abi5.ssa
+call python tools/test.py test/abi5.ssa
 call python tools/test.py test/abi6.ssa
 call python tools/test.py test/abi7.ssa
 ::call python tools/test.py test/abi8.ssa
@@ -26,7 +26,7 @@ call python tools/test.py test/alias1.ssa
 call python tools/test.py test/align.ssa
 call python tools/test.py test/cmp1.ssa
 call python tools/test.py test/collatz.ssa
-::call python tools/test.py test/conaddr.ssa
+call python tools/test.py test/conaddr.ssa
 call python tools/test.py test/cprime.ssa
 call python tools/test.py test/cup.ssa
 ::call python tools/test.py test/dark.ssa
@@ -54,7 +54,7 @@ call python tools/test.py test/mandel.ssa
 call python tools/test.py test/max.ssa
 call python tools/test.py test/mem1.ssa
 ::call python tools/test.py test/mem2.ssa
-::call python tools/test.py test/mem3.ssa
+call python tools/test.py test/mem3.ssa
 call python tools/test.py test/philv.ssa
 call python tools/test.py test/prime.ssa
 call python tools/test.py test/puts10.ssa

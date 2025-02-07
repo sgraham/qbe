@@ -206,7 +206,7 @@ static void classify_arguments(RegisterUsage* reg_usage,
       }
       case Oarge:
       case Opare:
-        die("env not implemented");
+        die("todo; env not implemented");
 
       case Oargv:
         reg_usage->is_varargs_call = true;
@@ -244,8 +244,6 @@ static Ins* lower_call(Fn* func,
                        Blk* block,
                        Ins* call_instr,
                        ExtraAlloc** pextra_alloc) {
-  (void)pextra_alloc;
-
   // Call arguments are instructions. Walk through them to find the end of the
   // call+args that we need to process (and return the instruction past the body
   // of the instruction for continuing processing).
@@ -262,16 +260,26 @@ static Ins* lower_call(Fn* func,
   uint num_args = call_instr - earliest_arg_instr;
   ArgClass* arg_classes = alloc(num_args * sizeof(ArgClass));
 
+  // TODO: `env` not handled yet.
+
+  RegisterUsage reg_usage = {0};
+  ArgClass ret_arg_class = {0};
+
   // Ocall's two arguments are the the function to be called in 0, and, if the
   // the function returns a non-basic type, then arg[1] is a reference to the
-  // type of the return.
-  // TODO: doesn't do anything with `env`, I don't understand that feature yet.
-  RegisterUsage reg_usage = {0};
-  if (req(call_instr->arg[1], R)) {  // req checks if Refs are equal; `R` is 0.
-    classify_arguments(&reg_usage, earliest_arg_instr, call_instr, arg_classes);
-  } else {
-    die("todo; ret");
+  // type of the return. req checks if Refs are equal; `R` is 0.
+  bool il_has_struct_return = !req(call_instr->arg[1], R);
+  bool is_struct_return = false;
+  if (il_has_struct_return) {
+    Typ* ret_type = &typ[call_instr->arg[1].val];
+    is_struct_return = type_is_by_copy(ret_type);
+    if (is_struct_return) {
+      assign_register_or_stack(&reg_usage, &ret_arg_class, /*is_float=*/false,
+                               /*by_copy=*/true);
+    }
+    ret_arg_class.size = ret_type->size;
   }
+  classify_arguments(&reg_usage, earliest_arg_instr, call_instr, arg_classes);
 
   // We now know which arguments are on the stack and which are in registers, so
   // we can allocate the correct amount of space to stash the stack-located ones
@@ -301,18 +309,38 @@ static Ins* lower_call(Fn* func,
   emit(Osalloc, Kl, R, stack_size_ref, R);
 
   ExtraAlloc* return_pad = NULL;
-  if (req(call_instr->arg[1], R)) {
-    // If only a basic type returned from the call.
-    if (is_integer_type(call_instr->cls)) {
+  if (is_struct_return) {
+    return_pad = alloc(sizeof(ExtraAlloc));
+    Ref ret_pad_ref = newtmp("abi.ret_pad", Kl, func);
+    return_pad->instr =
+        (Ins){Oalloc8, Kl, ret_pad_ref, {getcon(ret_arg_class.size, func)}};
+    return_pad->link = (*pextra_alloc);
+    *pextra_alloc = return_pad;
+    reg_usage.rax_returned = true;
+    emit(Ocopy, call_instr->cls, call_instr->to, TMP(RAX), R);
+  } else {
+    if (il_has_struct_return) {
+      // In the case that at the IL level, a struct return was specified, but as
+      // far as the calling convention is concerned it's not actually by
+      // pointer, we need to store the return value into an alloca because
+      // subsequent IL will still be treating the function return as a pointer.
+      ExtraAlloc* return_copy = alloc(sizeof(ExtraAlloc));
+      return_copy->instr = (Ins){Oalloc8, Kl, call_instr->to, {getcon(8, func)}};
+      return_copy->link = (*pextra_alloc);
+      *pextra_alloc = return_copy;
+      Ref copy = newtmp("abi.copy", Kl, func);
+      emit(Ostorel, Kl, R, copy, call_instr->to);
+      emit(Ocopy, Kl, copy, TMP(RAX), R);
+      reg_usage.rax_returned = true;
+    } else if (is_integer_type(call_instr->cls)) {
+      // Only a basic type returned from the call, integer.
       emit(Ocopy, call_instr->cls, call_instr->to, TMP(RAX), R);
       reg_usage.rax_returned = true;
     } else {
+      // Basic type, floating point.
       emit(Ocopy, call_instr->cls, call_instr->to, TMP(XMM0), R);
       reg_usage.xmm0_returned = true;
     }
-  } else {
-    // TODO: hidden first arg for structs by value here
-    die("todo; hidden first arg for struct return");
   }
 
   // Emit the actual call instruction. There's no 'to' value by this point
@@ -321,8 +349,6 @@ static Ins* lower_call(Fn* func,
   // documented as above (copied from SysV).
   emit(Ocall, call_instr->cls, R, call_instr->arg[0],
        CALL(register_usage_to_call_arg_value(reg_usage)));
-
-  int reg_counter = 0;
 
   if (reg_usage.is_varargs_call) {
     // Any float arguments need to be duplicated to integer registers. This is
@@ -335,11 +361,15 @@ static Ins* lower_call(Fn* func,
     DUP_IF_USED(0, XMM0, RCX);
     DUP_IF_USED(1, XMM1, RDX);
     DUP_IF_USED(2, XMM2, R8);
-    DUP_IF_USED(3, XMM2, R9);
+    DUP_IF_USED(3, XMM3, R9);
 #undef DUP_IF_USED
   }
 
-  // TODO: pass hidden first arg here in rcx
+  int reg_counter = 0;
+  if (is_struct_return) {
+    Ref first_reg = register_for_arg(Kl, reg_counter++);
+    emit(Ocopy, Kl, first_reg, return_pad->instr.to, R);
+  }
 
   // This is where we actually do the load of values into registers or into
   // stack slots.
